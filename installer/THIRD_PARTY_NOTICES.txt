@@ -1,0 +1,40 @@
+System Monitor includes the following third-party software.
+
+LibreHardwareMonitorLib and its components (used to read CPU temperature)
+  Files: sensor\lib\LibreHardwareMonitorLib.dll, BlackSharp.Core.dll,
+         DiskInfoToolkit.dll, RAMSPDToolkit-NDD.dll
+  License: Mozilla Public License 2.0 (https://www.mozilla.org/MPL/2.0/)
+  Source code: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
+
+HidSharp
+  File: sensor\lib\HidSharp.dll
+  License: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+  Source code: https://github.com/IntergatedCircuits/HidSharp
+
+System.Buffers, System.Memory, System.Numerics.Vectors,
+System.Runtime.CompilerServices.Unsafe
+  Files: sensor\lib\System.*.dll
+  License: MIT (https://github.com/dotnet/runtime/blob/main/LICENSE.TXT)
+  Copyright (c) .NET Foundation and Contributors
+
+Qt for Python (PySide6) and Qt
+  Files: _internal\PySide6\, _internal\shiboken6\
+  License: GNU Lesser General Public License v3 (https://www.gnu.org/licenses/lgpl-3.0.html)
+  Source code: https://code.qt.io/
+
+psutil
+  License: BSD 3-Clause (https://github.com/giampaolo/psutil/blob/master/LICENSE)
+
+nvidia-ml-py
+  License: BSD 3-Clause (https://pypi.org/project/nvidia-ml-py/)
+
+Python
+  File: _internal\python312.dll and the standard library
+  License: Python Software Foundation License (https://docs.python.org/3/license.html)
+
+OpenSSL (used by "Check for updates" for HTTPS)
+  Files: _internal\libssl-3.dll, _internal\libcrypto-3.dll
+  License: Apache License 2.0 (https://www.openssl.org/source/license.html)
+
+The PawnIO driver, if installed by the setup, is downloaded from its publisher
+through winget and is covered by its own license (https://pawnio.eu).
