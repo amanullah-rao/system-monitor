@@ -59,6 +59,16 @@ def _gpu(reading: SystemReading) -> MetricValue:
     return _percent(sum(loads) / len(loads) if loads else None)
 
 
+def _gpu_temperature(reading: SystemReading) -> MetricValue:
+    """The hottest graphics card."""
+    values = [gpu.temperature_c for gpu in reading.gpus if gpu.temperature_c is not None]
+    if not values:
+        return MetricValue("N/A")
+    value = max(values)
+    level = CRITICAL if value >= 85 else WARNING if value >= 75 else NORMAL
+    return MetricValue(format_temperature(value), value, level)
+
+
 def _disk_activity(reading: SystemReading) -> MetricValue:
     if reading.disk_read_bytes_per_s is None or reading.disk_write_bytes_per_s is None:
         return MetricValue("N/A")
@@ -88,6 +98,8 @@ METRICS: tuple[Metric, ...] = (
     Metric("cpu_temp", "CPU temperature", "TEMP", "100°C", ORANGE,
            _cpu_temperature, tray=True),
     Metric("gpu", "GPU usage", "GPU", "100%", VIOLET, _gpu, tray=True),
+    Metric("gpu_temp", "GPU temperature", "GPU°", "100°C", ORANGE,
+           _gpu_temperature, tray=True),
     Metric("disk", "Drive space used", "DISK", "100%", PINK,
            lambda r: _percent(r.disk_percent), tray=True),
     Metric("disk_io", "Disk activity", "I/O", "1023.9 MB/s", PINK, _disk_activity),
@@ -130,7 +142,7 @@ STRIP_PRESETS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Internet speed", ("download", "upload")),
     ("Speed + CPU/RAM", ("upload", "download", "cpu", "ram")),
     ("Performance", ("cpu", "cpu_temp", "ram", "gpu")),
-    ("Temperature first", ("cpu_temp", "cpu", "download", "upload")),
+    ("Temperatures", ("cpu_temp", "gpu_temp", "cpu", "gpu")),
     ("Data usage", ("download", "upload", "data_today", "data_month")),
     ("Everything", tuple(metric.key for metric in METRICS)),
 )
@@ -143,6 +155,7 @@ PREVIEW_VALUES = {
     "ram": "47%",
     "cpu_temp": "56°C",
     "gpu": "31%",
+    "gpu_temp": "48°C",
     "disk": "61%",
     "disk_io": "2.4 MB/s",
     "battery": "87%",

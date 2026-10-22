@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Amanullah
-# Publishes CPU temperatures for System Monitor without any window or tray icon.
+# Publishes CPU and graphics card temperatures for System Monitor without any
+# window or tray icon.
 #
 # Installed to Program Files by sensor_setup.ps1 and started elevated through
 # the "SystemMonitorSensors" scheduled task, because reading CPU temperature
@@ -33,6 +34,8 @@ function Get-OwnerAlive {
 Add-Type -Path (Join-Path $base 'lib\LibreHardwareMonitorLib.dll')
 $computer = New-Object LibreHardwareMonitor.Hardware.Computer
 $computer.IsCpuEnabled = $true
+# Graphics cards too: their temperatures for cards NVML can't read (AMD, Intel).
+$computer.IsGpuEnabled = $true
 $computer.Open()
 try {
     while (Get-OwnerAlive) {
@@ -41,7 +44,12 @@ try {
             $hardware.Update()
             foreach ($sensor in $hardware.Sensors) {
                 if ($sensor.SensorType -eq 'Temperature' -and $null -ne $sensor.Value) {
-                    $temperatures += [pscustomobject]@{ name = $sensor.Name; value = [double]$sensor.Value }
+                    $temperatures += [pscustomobject]@{
+                        name     = $sensor.Name
+                        value    = [double]$sensor.Value
+                        hardware = [string]$hardware.HardwareType  # Cpu, GpuNvidia, GpuAmd, GpuIntel
+                        device   = $hardware.Name
+                    }
                 }
             }
         }

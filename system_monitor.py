@@ -8,12 +8,17 @@ import subprocess
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import psutil
 
 from data_usage import DataUsageTracker
-from sensor_app import read_helper_output
+from sensor_app import (
+    SESSION_ENDING,
+    helper_gpu_temperatures,
+    read_helper_output,
+    sensor_problem,
+)
 
 
 @dataclass(frozen=True)
@@ -81,7 +86,17 @@ NO_SENSOR_MESSAGE = (
 )
 LHM_WEB_URL = "http://127.0.0.1:8085/data.json"
 # Preferred LibreHardwareMonitor sensor names, best first.
-LHM_PREFERRED_SENSORS = ("CPU Package", "Core Max", "Core Average", "CPU (Tctl/Tdie)")
+# Intel CPUs report "CPU Package"; AMD Ryzen CPUs report "Core (Tctl/Tdie)".
+LHM_PREFERRED_SENSORS = (
+    "CPU Package",
+    "Core Max",
+    "Core (Tctl/Tdie)",
+    "CPU (Tctl/Tdie)",
+    "CCDs Max (Tdie)",
+    "Core (Tctl)",
+    "Package",
+    "Core Average",
+)
 
 
 def network_adapters() -> list[tuple[str, bool]]:
@@ -127,7 +142,11 @@ class CpuTemperatureCollector:
                 if self._reading[0] is not None or starting
                 else self.NO_SENSOR_POLL_INTERVAL_SECONDS
             )
-            if not self._in_progress and time.monotonic() - self._last_poll >= interval:
+            if (
+                not self._in_progress
+                and not SESSION_ENDING.is_set()
+                and time.monotonic() - self._last_poll >= interval
+            ):
                 self._in_progress = True
                 threading.Thread(target=self._poll, daemon=True).start()
             return self._reading
@@ -162,7 +181,11 @@ class CpuTemperatureCollector:
         web_reading = cls._query_lhm_web_server()
         if web_reading is not None:
             return web_reading
-        return cls._query_wmi_sensors()
+        temperature, status = cls._query_wmi_sensors()
+        if temperature is None:
+            # Say what's missing when it's known, such as the PawnIO driver.
+            status = sensor_problem() or status
+        return temperature, status
 
     @staticmethod
     def _query_sensor_helper() -> tuple[float, str] | None:
@@ -173,6 +196,9 @@ class CpuTemperatureCollector:
         found: dict[str, float] = {}
         for sensor in data.get("temperatures") or []:
             if not isinstance(sensor, dict):
+                continue
+            # Older helpers listed CPU sensors only and had no hardware field.
+            if sensor.get("hardware", "Cpu") != "Cpu":
                 continue
             name = str(sensor.get("name", ""))
             try:
@@ -567,6 +593,8 @@ class SystemMonitor:
         self._previous_adapter = ""
         self._previous_network = self._read_network()
         self._data_usage = DataUsageTracker()
+        self._gpu_temperatures: dict[str, float] = {}
+        self._gpu_temperatures_read = -float("inf")
         self._previous_disk_io = self._read_disk_io()
         self._boot_time = psutil.boot_time()
         self._previous_time = time.monotonic()
@@ -654,13 +682,45 @@ class SystemMonitor:
             battery_percent=float(battery.percent) if battery is not None else None,
             battery_plugged=battery.power_plugged if battery is not None else None,
             uptime_seconds=max(0.0, time.time() - self._boot_time),
-            gpus=self._gpu_collector.read(),
+            gpus=self._read_gpus(),
             gpu_status=self._gpu_collector.status,
             cpu_temperature_c=cpu_temperature_c,
             cpu_temperature_status=cpu_temperature_status,
             processes=processes,
             timestamp=time.time(),
         )
+
+    def _read_gpus(self) -> tuple[GpuReading, ...]:
+        """NVML readings, with temperatures from the sensor helper where NVML has none.
+
+        The helper (LibreHardwareMonitor) also covers AMD and Intel graphics.
+        """
+        gpus = self._gpu_collector.read()
+        if all(gpu.temperature_c is not None for gpu in gpus):
+            return gpus
+        # The helper writes once a second; reading every other second is plenty.
+        if time.monotonic() - self._gpu_temperatures_read >= 2:
+            self._gpu_temperatures = helper_gpu_temperatures()
+            self._gpu_temperatures_read = time.monotonic()
+        temperatures = self._gpu_temperatures
+        if not temperatures:
+            return gpus
+        filled = []
+        for gpu in gpus:
+            if gpu.temperature_c is None:
+                name = gpu.name.casefold()
+                match = next(
+                    (
+                        value
+                        for device, value in temperatures.items()
+                        if device.casefold() in name or name in device.casefold()
+                    ),
+                    None,
+                )
+                if match is not None:
+                    gpu = replace(gpu, temperature_c=match)
+            filled.append(gpu)
+        return tuple(filled)
 
     def _read_network(self):
         # None when the chosen adapter is missing (unplugged or disabled).

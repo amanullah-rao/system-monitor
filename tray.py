@@ -39,6 +39,7 @@ from settings import (
     ALERTS_ENABLED,
     STRIP_COLORED,
     STRIP_FONT_SIZE,
+    STRIP_HIDE_FULL_SCREEN,
     STRIP_ITEMS,
     STRIP_ROWS,
     STRIP_SCREEN,
@@ -115,9 +116,16 @@ def build_tooltip(reading: SystemReading) -> str:
         "Data today "
         f"{format_bytes(reading.data_today_received + reading.data_today_sent)}",
     ]
-    gpu = METRICS_BY_KEY["gpu"].read(reading)
-    if gpu.number is not None:
-        lines.append(f"GPU {gpu.text}")
+    gpu_parts = [
+        value.text
+        for value in (
+            METRICS_BY_KEY["gpu"].read(reading),
+            METRICS_BY_KEY["gpu_temp"].read(reading),
+        )
+        if value.number is not None
+    ]
+    if gpu_parts:
+        lines.append("GPU " + " · ".join(gpu_parts))
     if reading.disk_percent is not None and reading.disk_free_gb is not None:
         lines.append(f"{reading.disk_name} {format_gb(reading.disk_free_gb)} free")
     if reading.battery_percent is not None:
@@ -212,6 +220,7 @@ class TrayMonitor(QObject):
             TRAY_ICON,
             STRIP_FONT_SIZE,
             STRIP_SCREEN,
+            STRIP_HIDE_FULL_SCREEN,
             STRIP_ITEMS,
             STRIP_COLORED,
             STRIP_VISIBLE,
@@ -275,6 +284,8 @@ class TrayMonitor(QObject):
             )
         elif key == STRIP_FONT_SIZE:
             self._strip.set_font_size(self._settings.value(STRIP_FONT_SIZE))
+        elif key == STRIP_HIDE_FULL_SCREEN:
+            self._strip.set_hide_in_full_screen(self._settings.value(STRIP_HIDE_FULL_SCREEN))
         elif key == STRIP_SCREEN:
             self._strip.set_screen(self._settings.value(STRIP_SCREEN))
         elif key == STRIP_COLORED:

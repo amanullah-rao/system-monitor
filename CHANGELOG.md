@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.1 — 2026-10-22
+
+- Fixed: a schtasks.exe error could appear when shutting down or signing out
+  of Windows. The app no longer starts any program once Windows begins to
+  shut down.
+- The taskbar strip now steps aside for full-screen apps such as games,
+  videos and Parsec, like the Windows taskbar does (Settings → Taskbar strip
+  → Hide during full-screen apps).
+- GPU temperature: a new reading for the strip and tray icon, also shown in
+  the tray tooltip. Temperatures for graphics cards that NVML can't read
+  (and as a fallback for NVIDIA) now come from the sensor reader.
+- Better CPU temperature support for AMD Ryzen processors.
+- When CPU temperature is unavailable, the app says why (for example a
+  missing PawnIO driver).
+- Settings → About → Copy diagnostic info, for problem reports.
+
 ## 1.1.0 — 2026-10-21
 
 First public release.

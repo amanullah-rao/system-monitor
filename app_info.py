@@ -7,7 +7,7 @@ Bump VERSION here before building a release; build_exe.ps1 reads it.
 """
 
 APP_NAME = "System Monitor"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 DESCRIPTION = "Live CPU, memory, disk, network and temperature monitor for Windows"
 AUTHOR = "Amanullah"
 GITHUB_URL = "https://github.com/amanullah-rao"

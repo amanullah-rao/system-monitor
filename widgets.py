@@ -491,7 +491,10 @@ class GpuRow(QWidget):
         has_load = gpu.utilization is not None
         self.bar.setVisible(has_load)
         if not has_load:
-            self.detail.setText("Live usage isn't available for this graphics adapter.")
+            text = "Live usage isn't available for this graphics adapter."
+            if gpu.temperature_c is not None:
+                text = f"{format_temperature(gpu.temperature_c)}  ·  {text}"
+            self.detail.setText(text)
             self.setToolTip(gpu.error or "")
             return
         self.bar.set_value(gpu.utilization)
@@ -739,6 +742,10 @@ class MonitorWindow(QMainWindow):
         ):
             layout.addWidget(indicator, 1)
         return page
+
+    @property
+    def last_reading(self) -> SystemReading | None:
+        return self._last_reading
 
     def apply_theme_colors(self) -> None:
         """Repaint with the current theme (the stylesheet itself is app-wide)."""

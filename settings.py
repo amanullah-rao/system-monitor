@@ -16,6 +16,7 @@ STRIP_ITEMS = "taskbar_strip/items"
 STRIP_COLORED = "taskbar_strip/colored"
 STRIP_ROWS = "taskbar_strip/rows"
 STRIP_FONT_SIZE = "taskbar_strip/font_size"
+STRIP_HIDE_FULL_SCREEN = "taskbar_strip/hide_in_full_screen"
 # Screen device name (such as DISPLAY2), or empty for the main screen.
 STRIP_SCREEN = "taskbar_strip/screen"
 # Adapter name as Windows shows it (such as Wi-Fi), or empty for all.
@@ -39,6 +40,7 @@ DEFAULTS: dict[str, bool | int | float | str] = {
     STRIP_COLORED: True,
     STRIP_ROWS: 2,
     STRIP_FONT_SIZE: 9.0,
+    STRIP_HIDE_FULL_SCREEN: True,
     STRIP_SCREEN: "",
     NETWORK_ADAPTER: "",
     MANAGE_SENSOR_APP: True,

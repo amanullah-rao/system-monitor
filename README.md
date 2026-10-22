@@ -10,17 +10,19 @@ and PySide6.
 - **Dashboard** with gauges, history sparklines, GPU details and the busiest
   processes; a **compact view** shows just the key numbers.
 - **Taskbar strip** — readings as text directly on the taskbar, next to the
-  clock: upload and download speed, CPU, RAM, CPU temperature, GPU, drive
-  space, disk activity, battery, time since start-up, and data used today or
-  this month. Pick what to show, set the order, choose one or two lines, a
-  text size, and which screen's taskbar to use. It stays visible when you
-  click the taskbar or open the hidden icons (^), and with an auto-hiding
-  taskbar it slides away and back with it.
+  clock: upload and download speed, CPU, RAM, CPU and GPU temperature, GPU
+  usage, drive space, disk activity, battery, time since start-up, and data
+  used today or this month. Pick what to show, set the order, choose one or
+  two lines, a text size, and which screen's taskbar to use. It stays visible
+  when you click the taskbar or open the hidden icons (^), slides away and
+  back with an auto-hiding taskbar, and steps aside for full-screen games,
+  videos and remote desktops such as Parsec (this can be turned off).
 - **Data usage** — internet data used today and this month, for all adapters
   or one connection (Wi-Fi, Ethernet, …). It's counted while the app runs.
 - **One tray icon** showing the app logo or one live reading, with a summary
   on hover and every option on right-click.
-- **CPU temperature** through the LibreHardwareMonitor library, with no extra
+- **CPU and GPU temperature** through the LibreHardwareMonitor library (Intel
+  and AMD Ryzen processors; NVIDIA, AMD and Intel graphics), with no extra
   window or tray icon (see below).
 - **Usage alerts** when CPU or memory stays above 90%, the system drive is
   almost full, or the battery is low.
@@ -86,7 +88,12 @@ is kept in `%LOCALAPPDATA%\System Monitor\data_usage.json`.
   tray menu to exit.
 - Only one copy runs at a time; opening it again brings the window forward.
 - GPU usage and memory are shown for NVIDIA cards (through NVML). Other
-  adapters are listed without live usage.
+  adapters are listed without live usage, with their temperature when the
+  sensor reader can read it.
+- If a reading is missing, hover it for the reason (for example a missing
+  PawnIO driver), or use **Settings → About → Copy diagnostic info** and paste
+  the result into a [problem report](https://github.com/amanullah-rao/system-monitor/issues).
+  It holds hardware and sensor details only.
 
 ## Run from source
 
@@ -136,6 +143,7 @@ Neither needs Python on the target PC (Windows 10/11, 64-bit).
 - `tray.py` — tray icon, tooltip and menu
 - `alerts.py` — usage notifications
 - `updates.py` — **Check for updates**
+- `diagnostics.py` — **Copy diagnostic info**
 - `widgets.py` — dashboard window, cards, gauges and sparklines
 - `settings.py`, `settings_dialog.py` — saved preferences and the Settings window
 - `theme.py`, `formatting.py` — colors, styles, icon and number formatting

@@ -129,10 +129,17 @@ def main() -> int:
     if has_tray:
         TrayMonitor(window, sampler, settings)
     listen_for_other_instances(window)
-    # Windows sign-out and shutdown must not be blocked by close-to-tray.
-    app.commitDataRequest.connect(lambda _manager: window.allow_quit())
+    def on_session_ending(_manager) -> None:
+        # Windows is signing out or shutting down. Close-to-tray must not
+        # block it, and no program may be started from now on (schtasks
+        # showed an error dialog at shutdown).
+        sensor_watchdog.stop()
+        sensor_app.session_ending()
+        window.allow_quit()
+
+    app.commitDataRequest.connect(on_session_ending)
     app.aboutToQuit.connect(sampler.stop)
-    app.aboutToQuit.connect(sensor_app.stop)
+    app.aboutToQuit.connect(lambda: sensor_app.stop(quitting=True))
 
     started_by_windows = AUTOSTART_FLAG in sys.argv[1:]
     if not (has_tray and started_by_windows and settings.value(START_MINIMIZED)):

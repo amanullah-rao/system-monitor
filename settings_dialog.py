@@ -2,6 +2,7 @@
 # Copyright (C) 2026 Amanullah
 
 import sys
+from collections.abc import Callable
 from html import escape
 
 from PySide6.QtCore import QRectF, QSize, Qt
@@ -40,6 +41,7 @@ from settings import (
     NETWORK_ADAPTER,
     STRIP_COLORED,
     STRIP_FONT_SIZE,
+    STRIP_HIDE_FULL_SCREEN,
     STRIP_ITEMS,
     STRIP_ROWS,
     STRIP_SCREEN,
@@ -52,6 +54,7 @@ from settings import (
     set_autostart,
 )
 import app_info
+import diagnostics
 from system_monitor import network_adapters
 from taskbar_strip import (
     columns_width,
@@ -345,7 +348,7 @@ class StripLayoutEditor(QWidget):
 
 
 class AboutPanel(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, diagnostics: Callable[[], str]) -> None:
         super().__init__()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
@@ -394,7 +397,23 @@ class AboutPanel(QWidget):
         updates.addWidget(self._check_button)
         updates.addWidget(self._update_status, 1)
         text.addLayout(updates)
+
+        report = QHBoxLayout()
+        report.setSpacing(12)
+        copy_button = QPushButton("Copy diagnostic info")
+        copy_button.setToolTip(
+            "Copies what System Monitor can and can't read on this PC (hardware and "
+            "sensors only), to paste into a problem report."
+        )
+        copy_button.clicked.connect(self._copy_diagnostics)
+        self._copy_status = QLabel()
+        self._copy_status.setObjectName("small")
+        self._copy_status.setWordWrap(True)
+        report.addWidget(copy_button)
+        report.addWidget(self._copy_status, 1)
+        text.addLayout(report)
         layout.addLayout(text, 1)
+        self._diagnostics = diagnostics
 
         self._checker = UpdateChecker(self)
         self._checker.finished.connect(self._show_update_result)
@@ -418,6 +437,12 @@ class AboutPanel(QWidget):
         )
         if self._update_result is not None:
             self._show_update_result(*self._update_result)
+
+    def _copy_diagnostics(self) -> None:
+        QGuiApplication.clipboard().setText(self._diagnostics())
+        self._copy_status.setText(
+            "Copied. Paste it into a problem report with “Report a problem” above."
+        )
 
     def _check_for_updates(self) -> None:
         if self._checker.check():
@@ -462,6 +487,7 @@ class SettingsDialog(QDialog):
         self._sensor_app = ToggleSwitch()
         self._strip = ToggleSwitch()
         self._colored = ToggleSwitch()
+        self._hide_full_screen = ToggleSwitch()
         self._close_to_tray = ToggleSwitch()
         self._alerts = ToggleSwitch()
         self._refresh = NoWheelComboBox()
@@ -472,6 +498,7 @@ class SettingsDialog(QDialog):
             (self._sensor_app, MANAGE_SENSOR_APP),
             (self._strip, STRIP_VISIBLE),
             (self._colored, STRIP_COLORED),
+            (self._hide_full_screen, STRIP_HIDE_FULL_SCREEN),
             (self._close_to_tray, CLOSE_TO_TRAY),
             (self._alerts, ALERTS_ENABLED),
         )
@@ -572,6 +599,12 @@ class SettingsDialog(QDialog):
                 self._colored,
             ),
             SettingRow(
+                "Hide during full-screen apps",
+                "Step aside for games, videos and remote desktops such as Parsec, "
+                "like the Windows taskbar does.",
+                self._hide_full_screen,
+            ),
+            SettingRow(
                 "Text size",
                 "Larger text is easier to read; two lines fit up to Extra large.",
                 self._font_size,
@@ -628,7 +661,10 @@ class SettingsDialog(QDialog):
                 ),
             ),
         )
-        self._about = AboutPanel()
+        # The window's latest reading adds what's shown for CPU and GPU.
+        self._about = AboutPanel(
+            lambda: diagnostics.collect(getattr(parent, "last_reading", None))
+        )
         self._add_group(layout, "ABOUT", (self._about,))
 
         self._error = QLabel()

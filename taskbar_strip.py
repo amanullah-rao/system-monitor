@@ -3,6 +3,7 @@
 
 import ctypes
 import ctypes.wintypes as wintypes
+import os
 import sys
 
 from PySide6.QtCore import QRect, QRectF, QSettings, Qt, QTimer, Signal
@@ -85,6 +86,14 @@ if sys.platform == "win32":
         _MonitorEnumProc,
         wintypes.LPARAM,
     ]
+    _user32.GetForegroundWindow.restype = ctypes.c_void_p
+    _user32.IsZoomed.argtypes = [ctypes.c_void_p]
+    _user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+    _user32.GetWindowThreadProcessId.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
     _shell32.SHAppBarMessage.restype = ctypes.c_size_t
     _shell32.SHAppBarMessage.argtypes = [wintypes.DWORD, ctypes.POINTER(_AppBarData)]
 
@@ -159,6 +168,41 @@ def find_taskbars(monitors: dict[str, _MonitorInfo]) -> dict[str, int]:
     return taskbars
 
 
+# Windows' own desktop and taskbar windows, which cover a screen without being
+# a full-screen app.
+SHELL_WINDOW_CLASSES = frozenset(
+    {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
+)
+
+
+def full_screen_app_on(monitor: wintypes.RECT) -> bool:
+    """Whether the active window fills this screen, as games, videos and Parsec do.
+
+    Windows moves its taskbar behind such windows; the strip should go too.
+    A maximized window doesn't count: it leaves the taskbar uncovered.
+    """
+    hwnd = _user32.GetForegroundWindow()
+    if not hwnd or _user32.IsZoomed(hwnd) or not _user32.IsWindowVisible(hwnd):
+        return False
+    process = wintypes.DWORD()
+    _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process))
+    if process.value == os.getpid():
+        return False
+    class_name = ctypes.create_unicode_buffer(64)
+    _user32.GetClassNameW(hwnd, class_name, 64)
+    if class_name.value in SHELL_WINDOW_CLASSES:
+        return False
+    window = wintypes.RECT()
+    if not _user32.GetWindowRect(hwnd, ctypes.byref(window)):
+        return False
+    return (
+        window.left <= monitor.left
+        and window.top <= monitor.top
+        and window.right >= monitor.right
+        and window.bottom >= monitor.bottom
+    )
+
+
 def taskbar_auto_hides() -> bool:
     data = _AppBarData()
     data.cbSize = ctypes.sizeof(_AppBarData)
@@ -202,9 +246,10 @@ COLUMN_GAP = 14
 LABEL_GAP = 5
 SIDE_PADDING = 8
 DEFAULT_FONT_SIZE = 9.0
-# How often to follow the taskbar: often while it slides in and out by itself.
+# How often to follow the taskbar: often while it slides in and out by itself,
+# and often enough otherwise to step aside soon after a full-screen app starts.
 TRACK_AUTO_HIDE_MS = 150
-TRACK_DOCKED_MS = 1000
+TRACK_DOCKED_MS = 500
 
 # Warning colors that stay readable on either taskbar theme.
 LEVEL_COLORS = {
@@ -320,6 +365,7 @@ class TaskbarStrip(QWidget):
         # auto-hiding taskbar is tucked away.
         self._enabled = False
         self._screen_name = ""
+        self._hide_in_full_screen = True
         self._taskbar: int | None = None
         self._bar = QRect()
         self._drag_offset: float | None = None
@@ -406,6 +452,10 @@ class TaskbarStrip(QWidget):
         self._font_metrics = QFontMetrics(self._font)
         self.set_layout(self._keys, self._rows)
 
+    def set_hide_in_full_screen(self, hide: bool) -> None:
+        self._hide_in_full_screen = hide
+        self._place()
+
     def set_screen(self, name: str) -> None:
         """Sit on the taskbar of the screen with this device name ("" for the main one)."""
         self._screen_name = name
@@ -433,8 +483,9 @@ class TaskbarStrip(QWidget):
     def _locate(self) -> tuple[QScreen, int | None, QRect | None]:
         """The screen, its taskbar window, and the taskbar's area.
 
-        The area is None while an auto-hiding taskbar is tucked away. A
-        chosen screen that's gone or has no taskbar falls back to the main one.
+        The area is None while an auto-hiding taskbar is tucked away or a
+        full-screen app covers the screen. A chosen screen that's gone or has
+        no taskbar falls back to the main one.
         """
         monitors = list_monitors()
         taskbars = find_taskbars(monitors)
@@ -449,14 +500,21 @@ class TaskbarStrip(QWidget):
             screen = primary
             device = screen_device_name(screen, monitors)
         taskbar = taskbars.get(device)
-        if taskbar and device in monitors and taskbar_auto_hides():
-            monitor = monitors[device].rcMonitor
+        monitor = monitors[device].rcMonitor if device in monitors else None
+        if (
+            self._hide_in_full_screen
+            and monitor is not None
+            and full_screen_app_on(monitor)
+        ):
+            return screen, taskbar, None
+        if taskbar and monitor is not None and taskbar_auto_hides():
             return screen, taskbar, auto_hidden_taskbar_rect(screen, monitor, taskbar)
         return screen, taskbar, self._docked_rect(screen)
 
     def _place(self) -> None:
         _screen, self._taskbar, bar = self._locate()
         if bar is None:
+            # Taskbar tucked away (auto-hide) or covered by a full-screen app.
             self.hide()
             return
         self._bar = bar
