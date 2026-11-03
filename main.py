@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 import app_info
 import formatting
 import i18n
+import soft
 from restart import RESTART_FLAG
 from sampler import SamplerThread
 from sensor_app import SensorAppLauncher
@@ -24,6 +25,7 @@ from settings import (
     REFRESH_SECONDS,
     SPEED_UNIT,
     START_MINIMIZED,
+    STYLE,
     TEMPERATURE_UNIT,
     THEME,
     AppSettings,
@@ -99,8 +101,9 @@ def run_welcome(app: QApplication, settings: AppSettings) -> None:
     i18n.set_language(settings.value(LANGUAGE))
 
     def retheme(key: str) -> None:
-        if key == THEME:
-            apply_theme(app, settings.value(THEME))
+        if key in (THEME, STYLE):
+            apply_theme(app, settings.value(THEME), settings.value(STYLE))
+            soft.refresh_all()
 
     settings.changed.connect(retheme)
     WelcomeDialog(settings, None, first_run=True).exec()
@@ -130,7 +133,7 @@ def main() -> int:
     settings = AppSettings()
     i18n.set_language(settings.value(LANGUAGE))
     apply_display_settings(settings)
-    apply_theme(app, settings.value(THEME))
+    apply_theme(app, settings.value(THEME), settings.value(STYLE))
     refresh_autostart_command()
     if not settings.value(FIRST_RUN_DONE) and AUTOSTART_FLAG not in sys.argv[1:]:
         run_welcome(app, settings)
@@ -150,7 +153,7 @@ def main() -> int:
             sampler.set_network_adapter(settings.value(key))
         elif key in (SPEED_UNIT, TEMPERATURE_UNIT):
             apply_display_settings(settings)
-        elif key == THEME:
+        elif key in (THEME, STYLE):
             switch_theme()
         elif key == MANAGE_SENSOR_APP:
             if settings.value(key):
@@ -179,7 +182,7 @@ def main() -> int:
     window = MonitorWindow(sampler, settings)
 
     def switch_theme() -> None:
-        apply_theme(app, settings.value(THEME))
+        apply_theme(app, settings.value(THEME), settings.value(STYLE))
         window.apply_theme_colors()
 
     # With "Match Windows", follow Windows when its app mode changes.

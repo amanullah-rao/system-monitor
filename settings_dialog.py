@@ -41,6 +41,7 @@ import app_info
 import dialogs
 import diagnostics
 import i18n
+import soft
 import theme
 from i18n import N_, tr
 from metrics import (
@@ -65,6 +66,7 @@ from settings import (
     REFRESH_SECONDS,
     SPEED_UNIT,
     START_MINIMIZED,
+    STYLE,
     STRIP_BACKGROUND_OPACITY,
     STRIP_COLORED,
     STRIP_FONT_FAMILY,
@@ -93,7 +95,8 @@ from taskbar_strip import (
     screen_device_name,
     strip_font,
 )
-from theme import THEME_CHOICES, make_app_icon, match_title_bar
+from soft import SoftButton, SoftFrame
+from theme import STYLE_CHOICES, THEME_CHOICES, make_app_icon, match_title_bar
 from updates import (
     CURRENT,
     NEWER,
@@ -243,10 +246,31 @@ class ToggleSwitch(QAbstractButton):
         self.setFixedSize(self.sizeHint())
 
     def sizeHint(self) -> QSize:
-        return QSize(44, 24)
+        return QSize(50, 28) if theme.is_soft() else QSize(44, 24)
+
+    def apply_style(self) -> None:
+        self.setFixedSize(self.sizeHint())
+        self.update()
+
+    def _paint_soft(self) -> None:
+        """An inset slot with a raised knob."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        dpr = self.devicePixelRatioF()
+        track = QRectF(self.rect())
+        enabled = self.isEnabled()
+        soft.paint_inset(painter, track, track.height() / 2, depth=0.4, dpr=dpr)
+        diameter = track.height() - 8
+        left = track.width() - diameter - 4 if self.isChecked() else 4
+        knob = QRectF(left, 4, diameter, diameter)
+        fill = theme.ACCENT if self.isChecked() and enabled else theme.SURFACE
+        soft.paint_raised(painter, knob, 0, ellipse=True, depth=0.2, fill=fill, dpr=dpr)
 
     def paintEvent(self, event) -> None:
         del event
+        if theme.is_soft():
+            self._paint_soft()
+            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -369,7 +393,7 @@ class StripLayoutEditor(QWidget):
         presets.setHorizontalSpacing(8)
         presets.setVerticalSpacing(8)
         for index, (name, keys) in enumerate(STRIP_PRESETS):
-            button = QPushButton(tr(name))
+            button = SoftButton(tr(name))
             button.setObjectName("pill")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _=False, keys=keys: self._apply_preset(keys))
@@ -387,9 +411,9 @@ class StripLayoutEditor(QWidget):
         self.list.model().rowsMoved.connect(self._save)
         buttons = QVBoxLayout()
         buttons.setSpacing(8)
-        up = QPushButton("▲  " + tr("Move up"))
-        down = QPushButton("▼  " + tr("Move down"))
-        self._color_button = QPushButton(tr("Text color…"))
+        up = SoftButton("▲  " + tr("Move up"))
+        down = SoftButton("▼  " + tr("Move down"))
+        self._color_button = SoftButton(tr("Text color…"))
         self._color_button.setToolTip(tr("Pick a color for the selected reading"))
         up.clicked.connect(lambda: self._move(-1))
         down.clicked.connect(lambda: self._move(1))
@@ -570,7 +594,7 @@ class AboutPanel(QWidget):
         updates = QHBoxLayout()
         updates.setContentsMargins(0, 8, 0, 0)
         updates.setSpacing(12)
-        self._check_button = QPushButton(tr("Check for updates"))
+        self._check_button = SoftButton(tr("Check for updates"))
         self._check_button.setToolTip(
             tr("Asks GitHub for the latest release. Nothing about this PC is sent.")
         )
@@ -588,7 +612,7 @@ class AboutPanel(QWidget):
 
         download = QHBoxLayout()
         download.setSpacing(12)
-        self._download_button = QPushButton(tr("Download and install"))
+        self._download_button = SoftButton(tr("Download and install"))
         self._download_button.setObjectName("primaryButton")
         self._download_button.setToolTip(
             tr(
@@ -610,7 +634,7 @@ class AboutPanel(QWidget):
 
         report = QHBoxLayout()
         report.setSpacing(12)
-        copy_button = QPushButton(tr("Copy diagnostic info"))
+        copy_button = SoftButton(tr("Copy diagnostic info"))
         copy_button.setToolTip(
             tr(
                 "Copies what System Monitor can and can't read on this PC (hardware and "
@@ -626,7 +650,7 @@ class AboutPanel(QWidget):
         text.addLayout(report)
 
         welcome = QHBoxLayout()
-        welcome_button = QPushButton(tr("Run the welcome setup again"))
+        welcome_button = SoftButton(tr("Run the welcome setup again"))
         welcome_button.clicked.connect(run_welcome)
         welcome.addWidget(welcome_button)
         welcome.addStretch(1)
@@ -813,6 +837,9 @@ class SettingsDialog(QDialog):
         self._language = NoWheelComboBox()
         for code, name in i18n.LANGUAGES:
             self._language.addItem(name, code)
+        self._style = NoWheelComboBox()
+        for value, label in STYLE_CHOICES:
+            self._style.addItem(tr(label), value)
         self._temperature_unit = NoWheelComboBox()
         for value, label in TEMPERATURE_CHOICES:
             self._temperature_unit.addItem(tr(label), value)
@@ -838,6 +865,7 @@ class SettingsDialog(QDialog):
             (self._adapter, NETWORK_ADAPTER),
             (self._speed_unit, SPEED_UNIT),
             (self._theme, THEME),
+            (self._style, STYLE),
             (self._temperature_unit, TEMPERATURE_UNIT),
         )
 
@@ -886,6 +914,11 @@ class SettingsDialog(QDialog):
                     tr("Theme"),
                     tr("Dark, light, or follow the app mode set in Windows."),
                     self._theme,
+                ),
+                SettingRow(
+                    tr("Style"),
+                    tr("Classic is flat with outlines. Soft has rounded shapes that look pressed out of the surface."),
+                    self._style,
                 ),
                 SettingRow(
                     tr("Language"),
@@ -1076,7 +1109,7 @@ class SettingsDialog(QDialog):
         buttons = QHBoxLayout()
         buttons.setContentsMargins(24, 12, 24, 18)
         buttons.addStretch(1)
-        done = QPushButton(tr("Done"))
+        done = SoftButton(tr("Done"))
         done.setObjectName("primaryButton")
         done.setDefault(True)
         done.clicked.connect(self.accept)
@@ -1106,11 +1139,11 @@ class SettingsDialog(QDialog):
         heading.setObjectName("sectionTitle")
         layout.addSpacing(10)
         layout.addWidget(heading)
-        group = QFrame()
-        group.setObjectName("settingsGroup")
+        group = SoftFrame("settingsGroup", 16, 0.7)
         group_layout = QVBoxLayout(group)
         group_layout.setContentsMargins(0, 0, 0, 0)
         group_layout.setSpacing(0)
+        group.apply_style()
         for index, row in enumerate(rows):
             if index:
                 divider = QFrame()
@@ -1202,6 +1235,8 @@ class SettingsDialog(QDialog):
     def apply_theme_colors(self) -> None:
         self._about.apply_theme_colors()
         self._strip_layout.sync()
+        for toggle in self.findChildren(ToggleSwitch):
+            toggle.apply_style()
         match_title_bar(self)
 
     def showEvent(self, event) -> None:

@@ -51,11 +51,13 @@ from formatting import (
 )
 import dialogs
 import process_control
+import soft
 from restart import start_new_copy
 from collectors import DriveReading
 from i18n import tr
 from metrics import METRICS_BY_KEY
 from sampler import SamplerThread
+from soft import SoftButton, SoftFrame
 from settings import (
     CLOSE_TO_TRAY,
     DATA_LIMIT_GB,
@@ -245,6 +247,11 @@ class RingGauge(QWidget):
         half = self.THICKNESS / 2
         rect = QRectF(half, half, self.width() - self.THICKNESS, self.height() - self.THICKNESS)
 
+        if theme.is_soft():
+            inner = rect.adjusted(self.THICKNESS + 5, self.THICKNESS + 5,
+                                  -(self.THICKNESS + 5), -(self.THICKNESS + 5))
+            soft.paint_raised(painter, inner, 0, ellipse=True, depth=0.45,
+                              dpr=self.devicePixelRatioF())
         pen = QPen(QColor(theme.TRACK), self.THICKNESS)
         painter.setPen(pen)
         painter.drawEllipse(rect)
@@ -281,8 +288,12 @@ class UsageBar(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(theme.TRACK))
-        painter.drawRoundedRect(QRectF(self.rect()), 3, 3)
+        if theme.is_soft():
+            soft.paint_inset(painter, QRectF(self.rect()), 3, depth=0.28,
+                             dpr=self.devicePixelRatioF())
+        else:
+            painter.setBrush(QColor(theme.TRACK))
+            painter.drawRoundedRect(QRectF(self.rect()), 3, 3)
         if self._value > 0:
             width = max(6.0, self.width() * self._value / 100)
             normal = theme.color(self._color_name)
@@ -336,15 +347,15 @@ class UsageBarDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class Card(QFrame):
+class Card(SoftFrame):
     def __init__(self, title: str, color: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("card")
+        super().__init__("card", soft.CARD_RADIUS, 1.0, parent)
         self._color_name = color
         self._chip_state: tuple[str, str] | None = None
         self.body = QVBoxLayout(self)
         self.body.setContentsMargins(18, 16, 18, 14)
         self.body.setSpacing(10)
+        self.apply_style()
 
         header = QHBoxLayout()
         header.setSpacing(8)
@@ -363,6 +374,7 @@ class Card(QFrame):
         Card.apply_theme_colors(self)
 
     def apply_theme_colors(self) -> None:
+        self.apply_style()
         self._dot.setStyleSheet(
             f"background: {theme.color(self._color_name)}; border-radius: 4px;"
         )
@@ -926,13 +938,13 @@ class ProcessCard(Card):
         return item
 
 
-class CompactIndicator(QFrame):
+class CompactIndicator(SoftFrame):
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("compactIndicator")
+        super().__init__("compactIndicator", 16, 0.8, parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(2)
+        self.apply_style()
         heading = QLabel(title.upper())
         heading.setObjectName("cardTitle")
         self.value = QLabel("—")
@@ -1003,8 +1015,16 @@ class MonitorWindow(QMainWindow):
         root_layout.addWidget(self.pages, 1)
         self.setCentralWidget(root)
 
+        self._apply_style_spacing()
         sampler.reading_ready.connect(self._show_reading)
         sampler.sample_failed.connect(self._show_error)
+
+    def _apply_style_spacing(self) -> None:
+        """Cards leave room for their own shadows in the Soft style, so the
+        layout only adds what's left of the usual gap."""
+        extra = 2 * soft.margin() if theme.is_soft() else 0
+        self._grid.setSpacing(max(0, 14 - extra))
+        self._compact_layout.setSpacing(max(0, 10 - extra))
 
     def _on_setting_changed(self, key: str) -> None:
         if key == PROCESS_SORT:
@@ -1030,10 +1050,10 @@ class MonitorWindow(QMainWindow):
         layout.addLayout(title_column)
         layout.addStretch(1)
 
-        self.mode_button = QPushButton(glyph_icon(GLYPH_COMPACT), "  " + tr("Compact view"))
+        self.mode_button = SoftButton(glyph_icon(GLYPH_COMPACT), "  " + tr("Compact view"))
         self.mode_button.setToolTip(tr("Switch to a small window with just the key numbers"))
         self.mode_button.clicked.connect(self._toggle_mode)
-        self.settings_button = settings_button = QPushButton(glyph_icon(GLYPH_SETTINGS), "")
+        self.settings_button = settings_button = SoftButton(glyph_icon(GLYPH_SETTINGS), "")
         settings_button.setObjectName("iconButton")
         settings_button.setToolTip(tr("Settings"))
         settings_button.clicked.connect(self.open_settings)
@@ -1045,7 +1065,7 @@ class MonitorWindow(QMainWindow):
         page = QWidget()
         grid = QGridLayout(page)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(14)
+        self._grid = grid
         grid.addWidget(self.cpu_card, 0, 0)
         grid.addWidget(self.memory_card, 0, 1)
         grid.addWidget(self.disk_card, 0, 2)
@@ -1067,7 +1087,7 @@ class MonitorWindow(QMainWindow):
         page = QWidget()
         layout = QHBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        self._compact_layout = layout
         for indicator in (
             self.compact_cpu,
             self.compact_memory,
@@ -1098,6 +1118,8 @@ class MonitorWindow(QMainWindow):
             glyph_icon(GLYPH_EXPAND if self._compact else GLYPH_COMPACT)
         )
         self.settings_button.setIcon(glyph_icon(GLYPH_SETTINGS))
+        self._apply_style_spacing()
+        soft.refresh_all()
         if self._last_reading is not None:
             self._show_reading(self._last_reading)
         if self._settings_dialog is not None:

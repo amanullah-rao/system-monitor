@@ -24,6 +24,9 @@
   laptop reports it (a new reading for the strip).
 - **Updates**: Check for updates can now download the installer, check it
   against GitHub's checksum, and open it.
+- **Soft style** (neumorphism): an optional look with rounded shapes that seem
+  pressed out of, or into, one surface, in both the dark and the light theme.
+  Choose it under Settings → Appearance → Style; Classic stays the default.
 
 ## 1.1.2 — 2026-11-03
 

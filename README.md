@@ -33,8 +33,9 @@ and PySide6.
   window or tray icon (see below).
 - **Usage alerts** when CPU or memory stays high, a drive is almost full, the
   battery is low or the data limit is near. You choose the levels.
-- **English and Korean (한국어)**, a welcome page for first-time setup, and a
-  **dark or light theme** (or match the app mode set in Windows).
+- **English and Korean (한국어)**, a welcome page for first-time setup, a
+  **dark or light theme** (or match the app mode set in Windows), and an
+  optional **Soft style** with rounded, softly shadowed shapes.
 - Starts with Windows if you like, refreshes every ½ second by default, and
   uses about 3% of one CPU core and around 150 MB of memory.
 
@@ -157,6 +158,7 @@ Neither needs Python on the target PC (Windows 10/11, 64-bit).
 - `welcome.py` — the first-run setup page
 - `i18n.py`, `translations_ko.py`, `tools_i18n.py` — languages, and a check
   that every sentence has a Korean translation
+- `soft.py` — the Soft style's shadows, cards and buttons
 - `process_control.py`, `dialogs.py`, `restart.py` — ending processes, message
   boxes and restarting the app
 - `widgets.py` — dashboard window, cards, gauges and sparklines

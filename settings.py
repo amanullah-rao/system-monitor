@@ -32,6 +32,8 @@ ALERTS_ENABLED = "alerts/enabled"
 THEME = "appearance/theme"
 # "en" or "ko"; takes effect when the app starts (see i18n.LANGUAGES).
 LANGUAGE = "appearance/language"
+# "classic" or "soft" (see theme.STYLE_CHOICES).
+STYLE = "appearance/style"
 # "C" or "F".
 TEMPERATURE_UNIT = "appearance/temperature_unit"
 # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps).
@@ -76,6 +78,7 @@ DEFAULTS: dict[str, bool | int | float | str] = {
     ALERTS_ENABLED: True,
     THEME: "dark",
     LANGUAGE: "en",
+    STYLE: "classic",
     TEMPERATURE_UNIT: "C",
     SPEED_UNIT: "bytes",
     DATA_LIMIT_GB: 0,
