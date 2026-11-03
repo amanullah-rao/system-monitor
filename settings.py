@@ -30,6 +30,31 @@ REFRESH_SECONDS = "sampling/interval_seconds"
 ALERTS_ENABLED = "alerts/enabled"
 # "dark", "light", or "system" to match Windows (see theme.THEME_CHOICES).
 THEME = "appearance/theme"
+# "en" or "ko"; takes effect when the app starts (see i18n.LANGUAGES).
+LANGUAGE = "appearance/language"
+# "C" or "F".
+TEMPERATURE_UNIT = "appearance/temperature_unit"
+# "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps).
+SPEED_UNIT = "network/speed_unit"
+# Monthly internet data limit in GB; 0 for none. DATA_LIMIT_NOTICE remembers
+# the last warning, such as "2026-11:80", so it isn't repeated.
+DATA_LIMIT_GB = "network/data_limit_gb"
+DATA_LIMIT_NOTICE = "network/data_limit_notice"
+# When to alert: percent, and (for drives and the battery) percent left.
+ALERT_CPU_PERCENT = "alerts/cpu_percent"
+ALERT_RAM_PERCENT = "alerts/ram_percent"
+ALERT_DRIVE_FREE_PERCENT = "alerts/drive_free_percent"
+ALERT_BATTERY_PERCENT = "alerts/battery_percent"
+# Taskbar strip looks.
+STRIP_HOVER_PANEL = "taskbar_strip/hover_panel"
+STRIP_FONT_FAMILY = "taskbar_strip/font_family"
+# Background behind the text, 0 (none) to 100 percent.
+STRIP_BACKGROUND_OPACITY = "taskbar_strip/background_opacity"
+# Per-item text colors as "cpu=#ff8800,ram=#00ccff".
+STRIP_COLORS = "taskbar_strip/colors"
+# Dashboard process list order: "cpu" or "memory".
+PROCESS_SORT = "dashboard/process_sort"
+FIRST_RUN_DONE = "app/first_run_done"
 
 # Earlier settings for several tray icons; replaced by the single TRAY_ICON.
 LEGACY_TRAY_KEYS = ("tray/show_memory_icon", "tray/icons")
@@ -50,6 +75,21 @@ DEFAULTS: dict[str, bool | int | float | str] = {
     REFRESH_SECONDS: 0.5,
     ALERTS_ENABLED: True,
     THEME: "dark",
+    LANGUAGE: "en",
+    TEMPERATURE_UNIT: "C",
+    SPEED_UNIT: "bytes",
+    DATA_LIMIT_GB: 0,
+    DATA_LIMIT_NOTICE: "",
+    ALERT_CPU_PERCENT: 90,
+    ALERT_RAM_PERCENT: 90,
+    ALERT_DRIVE_FREE_PERCENT: 10,
+    ALERT_BATTERY_PERCENT: 15,
+    STRIP_HOVER_PANEL: True,
+    STRIP_FONT_FAMILY: "Segoe UI",
+    STRIP_BACKGROUND_OPACITY: 0,
+    STRIP_COLORS: "",
+    PROCESS_SORT: "cpu",
+    FIRST_RUN_DONE: False,
 }
 
 AUTOSTART_FLAG = "--autostart"
@@ -67,10 +107,26 @@ class AppSettings(QObject):
         self._store = QSettings()
         for key in LEGACY_TRAY_KEYS:
             self._store.remove(key)
+        # Earlier versions had no welcome page: anyone who already has saved
+        # settings is an existing user and doesn't need it.
+        if not self._store.contains(FIRST_RUN_DONE) and self._store.allKeys():
+            self._store.setValue(FIRST_RUN_DONE, True)
 
     def value(self, key: str):
         default = DEFAULTS[key]
         return self._store.value(key, default, type=type(default))
+
+    def colors(self) -> dict[str, str]:
+        """The per-item strip colors, by metric key."""
+        found = {}
+        for part in self.value(STRIP_COLORS).split(","):
+            key, _, color = part.partition("=")
+            if key and color.startswith("#") and len(color) == 7:
+                found[key] = color
+        return found
+
+    def set_colors(self, colors: dict[str, str]) -> None:
+        self.set_value(STRIP_COLORS, ",".join(f"{k}={v}" for k, v in colors.items()))
 
     def set_value(self, key: str, value) -> None:
         if self.value(key) == value:

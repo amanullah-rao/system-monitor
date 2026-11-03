@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.2.0 — 2026-11-03
+
+- **Welcome page** on the first start: language, theme, what the taskbar strip
+  shows, and start with Windows. It can be run again from Settings → About.
+- **Korean (한국어)** interface, next to English. The language changes after a
+  restart, which the app offers to do.
+- **Hover details**: rest the mouse on the taskbar strip to see every CPU core,
+  the busiest apps and each connection's speed.
+- **Internet data**: a chart of the last 30 days, and an optional monthly
+  limit that warns at 80% and when it is reached.
+- **All drives** are listed on the dashboard, and the low-space alert covers
+  every drive.
+- **Speed unit**: show internet speed in bytes (KB/s, MB/s) or bits (Kbps,
+  Mbps).
+- **Temperature unit**: °C or °F everywhere.
+- **Processes**: right-click an app to end it or open its folder, and click CPU
+  or Memory to sort the list.
+- **Taskbar strip looks**: choose the font, a backdrop behind the text, and a
+  color for each reading.
+- **Alert levels** are now yours to set: CPU, memory, drive space and battery.
+- **Laptops**: the time left on battery, and the charging power where the
+  laptop reports it (a new reading for the strip).
+- **Updates**: Check for updates can now download the installer, check it
+  against GitHub's checksum, and open it.
+
 ## 1.1.2 — 2026-11-03
 
 - Fixed: the taskbar strip stayed on screen during some games and remote

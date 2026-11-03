@@ -16,6 +16,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+import formatting
 from alerts import UsageAlerts
 from formatting import (
     format_bytes,
@@ -24,6 +25,7 @@ from formatting import (
     format_rate,
     format_temperature,
 )
+from i18n import tr
 from metrics import (
     CRITICAL,
     METRICS,
@@ -36,16 +38,37 @@ from metrics import (
 )
 from sampler import SamplerThread
 from settings import (
+    ALERT_BATTERY_PERCENT,
+    ALERT_CPU_PERCENT,
+    ALERT_DRIVE_FREE_PERCENT,
+    ALERT_RAM_PERCENT,
     ALERTS_ENABLED,
+    DATA_LIMIT_GB,
+    DATA_LIMIT_NOTICE,
+    SPEED_UNIT,
+    STRIP_BACKGROUND_OPACITY,
     STRIP_COLORED,
+    STRIP_COLORS,
+    STRIP_FONT_FAMILY,
     STRIP_FONT_SIZE,
     STRIP_HIDE_FULL_SCREEN,
+    STRIP_HOVER_PANEL,
     STRIP_ITEMS,
     STRIP_ROWS,
     STRIP_SCREEN,
     STRIP_VISIBLE,
+    TEMPERATURE_UNIT,
     TRAY_ICON,
     AppSettings,
+)
+
+ALERT_KEYS = (
+    ALERT_CPU_PERCENT,
+    ALERT_RAM_PERCENT,
+    ALERT_DRIVE_FREE_PERCENT,
+    ALERT_BATTERY_PERCENT,
+    DATA_LIMIT_GB,
+    DATA_LIMIT_NOTICE,
 )
 from system_monitor import SystemReading
 from taskbar_strip import TaskbarStrip
@@ -78,7 +101,7 @@ def make_tray_icon(metric: Metric, value: MetricValue | None) -> QIcon:
     elif number is None:
         text, color = "–", QColor(MUTED)
     else:
-        text = f"{min(number, 999):.0f}"
+        text = value.tray_text or f"{min(number, 999):.0f}"
         color = {CRITICAL: QColor(RED), WARNING: QColor(AMBER)}.get(value.level, accent)
 
     font = QFont("Segoe UI")
@@ -108,13 +131,17 @@ def build_tooltip(reading: SystemReading) -> str:
     """Most useful lines first, stopping before Windows would cut the text off."""
     lines = [
         f"CPU {reading.cpu_percent:.0f}% · "
-        f"{format_temperature(reading.cpu_temperature_c, 'temp N/A')}",
+        f"{format_temperature(reading.cpu_temperature_c, tr('temp N/A'))}",
         f"RAM {reading.memory_percent:.0f}% · "
-        f"{format_gb(reading.memory_used_gb)} of {format_gb(reading.memory_total_gb)}",
+        + tr("{used} of {total}").format(
+            used=format_gb(reading.memory_used_gb),
+            total=format_gb(reading.memory_total_gb),
+        ),
         f"↓ {format_rate(reading.network_received_mbps)}  "
         f"↑ {format_rate(reading.network_sent_mbps)}",
-        "Data today "
-        f"{format_bytes(reading.data_today_received + reading.data_today_sent)}",
+        tr("Data today {amount}").format(
+            amount=format_bytes(reading.data_today_received + reading.data_today_sent)
+        ),
     ]
     gpu_parts = [
         value.text
@@ -127,13 +154,25 @@ def build_tooltip(reading: SystemReading) -> str:
     if gpu_parts:
         lines.append("GPU " + " · ".join(gpu_parts))
     if reading.disk_percent is not None and reading.disk_free_gb is not None:
-        lines.append(f"{reading.disk_name} {format_gb(reading.disk_free_gb)} free")
+        lines.append(
+            tr("{drive} {free} free").format(
+                drive=reading.disk_name, free=format_gb(reading.disk_free_gb)
+            )
+        )
     if reading.battery_percent is not None:
-        lines.append(f"Battery {METRICS_BY_KEY['battery'].read(reading).text}")
+        battery = tr("Battery") + " " + METRICS_BY_KEY["battery"].read(reading).text
+        info = METRICS_BY_KEY["battery_info"].read(reading).text
+        if info != "N/A":
+            battery += f" · {info}"
+        lines.append(battery)
     if reading.processes:
         top = reading.processes[0]
-        lines.append(f"Top: {top.name} {top.cpu_percent:.0f}%")
-    lines.append(f"Up {format_duration(reading.uptime_seconds)}")
+        lines.append(
+            tr("Top: {name} {percent}%").format(
+                name=top.name, percent=f"{top.cpu_percent:.0f}"
+            )
+        )
+    lines.append(tr("Up {duration}").format(duration=format_duration(reading.uptime_seconds)))
 
     tooltip = ""
     for line in lines:
@@ -160,43 +199,52 @@ class TrayMonitor(QObject):
         self._drawn: tuple[str, str, int] | None = None
         self._alerts = UsageAlerts(self)
         self._alerts.alert.connect(self._notify)
+        self._alerts.data_notice_changed.connect(
+            lambda notice: self._settings.set_value(DATA_LIMIT_NOTICE, notice)
+        )
 
         self._menu = QMenu()
-        open_action = self._menu.addAction("Open System Monitor")
+        open_action = self._menu.addAction(tr("Open System Monitor"))
         bold = open_action.font()
         bold.setBold(True)
         open_action.setFont(bold)
         open_action.triggered.connect(window.bring_to_front)
         self._menu.addSeparator()
 
-        icon_menu = self._menu.addMenu("Tray icon shows")
+        icon_menu = self._menu.addMenu(tr("Tray icon shows"))
         icon_choices = QActionGroup(icon_menu)
         self._icon_actions: dict[str, QAction] = {}
         for key, label in TRAY_ICON_CHOICES:
-            action = icon_menu.addAction(label)
+            action = icon_menu.addAction(tr(label))
             action.setCheckable(True)
             icon_choices.addAction(action)
             action.triggered.connect(
                 lambda _=False, key=key: self._settings.set_value(TRAY_ICON, key)
             )
             self._icon_actions[key] = action
-        strip_menu = self._menu.addMenu("Taskbar strip")
-        self._strip_action = self._add_toggle(strip_menu, "Show on taskbar", STRIP_VISIBLE)
-        self._colored_action = self._add_toggle(
-            strip_menu, "Color warnings", STRIP_COLORED
+        strip_menu = self._menu.addMenu(tr("Taskbar strip"))
+        self._strip_action = self._add_toggle(
+            strip_menu, tr("Show on taskbar"), STRIP_VISIBLE
         )
-        strip_menu.addAction("Edit layout and order…").triggered.connect(
+        self._colored_action = self._add_toggle(
+            strip_menu, tr("Color warnings"), STRIP_COLORED
+        )
+        strip_menu.addAction(tr("Edit layout and order…")).triggered.connect(
             window.open_settings
         )
         strip_menu.addSeparator()
         self._strip_item_actions = {
-            metric.key: self._add_list_toggle(strip_menu, metric.name, STRIP_ITEMS, metric.key)
+            metric.key: self._add_list_toggle(
+                strip_menu, tr(metric.name), STRIP_ITEMS, metric.key
+            )
             for metric in METRICS
         }
-        self._alerts_action = self._add_toggle(self._menu, "Usage alerts", ALERTS_ENABLED)
+        self._alerts_action = self._add_toggle(
+            self._menu, tr("Usage alerts"), ALERTS_ENABLED
+        )
         self._menu.addSeparator()
-        self._menu.addAction("Settings…").triggered.connect(window.open_settings)
-        self._menu.addAction("Quit System Monitor").triggered.connect(
+        self._menu.addAction(tr("Settings…")).triggered.connect(window.open_settings)
+        self._menu.addAction(tr("Quit System Monitor")).triggered.connect(
             window.quit_application
         )
 
@@ -210,21 +258,28 @@ class TrayMonitor(QObject):
 
         # One icon only, so the notification area holds a single entry for the app.
         self._icon = QSystemTrayIcon(make_app_icon(), self)
-        self._icon.setToolTip("System Monitor · starting…")
+        self._icon.setToolTip(tr("System Monitor · starting…"))
         self._icon.setContextMenu(self._menu)
         self._icon.activated.connect(self._on_activated)
         self._icon.show()
 
         settings.changed.connect(self._apply_setting)
         for key in (
+            SPEED_UNIT,
+            TEMPERATURE_UNIT,
             TRAY_ICON,
             STRIP_FONT_SIZE,
+            STRIP_FONT_FAMILY,
+            STRIP_BACKGROUND_OPACITY,
+            STRIP_COLORS,
+            STRIP_HOVER_PANEL,
             STRIP_SCREEN,
             STRIP_HIDE_FULL_SCREEN,
             STRIP_ITEMS,
             STRIP_COLORED,
             STRIP_VISIBLE,
             ALERTS_ENABLED,
+            ALERT_CPU_PERCENT,
         ):
             self._apply_setting(key)
 
@@ -261,7 +316,31 @@ class TrayMonitor(QObject):
         choice = self._settings.value(TRAY_ICON)
         return choice if choice in self._icon_actions else "logo"
 
+    def _configure_alerts(self) -> None:
+        settings = self._settings
+        self._alerts.configure(
+            settings.value(ALERT_CPU_PERCENT),
+            settings.value(ALERT_RAM_PERCENT),
+            settings.value(ALERT_DRIVE_FREE_PERCENT),
+            settings.value(ALERT_BATTERY_PERCENT),
+            settings.value(DATA_LIMIT_GB),
+            settings.value(DATA_LIMIT_NOTICE),
+        )
+
     def _apply_setting(self, key: str) -> None:
+        if key in ALERT_KEYS:
+            if key == DATA_LIMIT_GB:
+                # A new limit starts the warnings afresh.
+                self._settings.set_value(DATA_LIMIT_NOTICE, "")
+            self._configure_alerts()
+            return
+        if key in (SPEED_UNIT, TEMPERATURE_UNIT):
+            formatting.set_speed_unit(self._settings.value(SPEED_UNIT))
+            formatting.set_temperature_unit(self._settings.value(TEMPERATURE_UNIT))
+            self._drawn = None
+            # The strip is sized for its widest value, which depends on the unit.
+            self._apply_setting(STRIP_ITEMS)
+            return
         if key == TRAY_ICON:
             self._set_checked(self._icon_actions[self._icon_choice()], True)
             self._drawn = None
@@ -284,6 +363,14 @@ class TrayMonitor(QObject):
             )
         elif key == STRIP_FONT_SIZE:
             self._strip.set_font_size(self._settings.value(STRIP_FONT_SIZE))
+        elif key == STRIP_FONT_FAMILY:
+            self._strip.set_font_family(self._settings.value(STRIP_FONT_FAMILY))
+        elif key == STRIP_BACKGROUND_OPACITY:
+            self._strip.set_background_opacity(self._settings.value(STRIP_BACKGROUND_OPACITY))
+        elif key == STRIP_COLORS:
+            self._strip.set_item_colors(self._settings.colors())
+        elif key == STRIP_HOVER_PANEL:
+            self._strip.set_hover_panel(self._settings.value(STRIP_HOVER_PANEL))
         elif key == STRIP_HIDE_FULL_SCREEN:
             self._strip.set_hide_in_full_screen(self._settings.value(STRIP_HIDE_FULL_SCREEN))
         elif key == STRIP_SCREEN:
@@ -326,8 +413,8 @@ class TrayMonitor(QObject):
             return
         self._told_about_tray = True
         self._icon.showMessage(
-            "System Monitor is still running",
-            "Click the tray icon to open it again, or right-click it for options.",
+            tr("System Monitor is still running"),
+            tr("Click the tray icon to open it again, or right-click it for options."),
             QSystemTrayIcon.MessageIcon.Information,
             4000,
         )

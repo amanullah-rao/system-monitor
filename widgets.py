@@ -6,7 +6,7 @@ import ctypes.wintypes as wintypes
 import os
 import sys
 from collections import deque
-from datetime import datetime
+from datetime import date, datetime
 from html import escape
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -47,8 +49,21 @@ from formatting import (
     format_rate,
     format_temperature,
 )
+import dialogs
+import process_control
+from restart import start_new_copy
+from collectors import DriveReading
+from i18n import tr
+from metrics import METRICS_BY_KEY
 from sampler import SamplerThread
-from settings import CLOSE_TO_TRAY, AppSettings
+from settings import (
+    CLOSE_TO_TRAY,
+    DATA_LIMIT_GB,
+    PROCESS_SORT,
+    SPEED_UNIT,
+    TEMPERATURE_UNIT,
+    AppSettings,
+)
 from settings_dialog import SettingsDialog
 from system_monitor import GpuReading, ProcessReading, SystemReading
 import theme
@@ -374,7 +389,7 @@ class GaugeCard(Card):
         self.gauge = RingGauge()
         details = QVBoxLayout()
         details.setSpacing(4)
-        self.primary = QLabel("Waiting for data…")
+        self.primary = QLabel(tr("Waiting for data…"))
         self.primary.setObjectName("primary")
         self.primary.setWordWrap(True)
         self.secondary = QLabel()
@@ -412,19 +427,15 @@ class GaugeCard(Card):
 
 class NetworkCard(Card):
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__("Network", "VIOLET", parent)
+        super().__init__(tr("Network"), "VIOLET", parent)
         row = QHBoxLayout()
         row.setSpacing(36)
-        self.download = self._add_column(row, "↓  Download")
-        self.upload = self._add_column(row, "↑  Upload")
+        self.download = self._add_column(row, "↓  " + tr("Download"))
+        self.upload = self._add_column(row, "↑  " + tr("Upload"))
         row.addStretch(1)
         self.body.addLayout(row)
-        self.usage = QLabel("Waiting for data…")
-        self.usage.setObjectName("muted")
-        self.usage.setToolTip("Counted while System Monitor is running")
-        self.totals = QLabel()
+        self.totals = QLabel(tr("Waiting for data…"))
         self.totals.setObjectName("small")
-        self.body.addWidget(self.usage)
         self.body.addWidget(self.totals)
         self.body.addStretch(1)
         self.chart = Sparkline("VIOLET", max_value=None)
@@ -453,20 +464,233 @@ class NetworkCard(Card):
         total = reading.network_sent_mbps + reading.network_received_mbps
         self.download.setText(format_rate(reading.network_received_mbps))
         self.upload.setText(format_rate(reading.network_sent_mbps))
-        self.usage.setText(
-            f"Today  ↓ {format_bytes(reading.data_today_received)}  "
-            f"↑ {format_bytes(reading.data_today_sent)}      "
-            f"This month  ↓ {format_bytes(reading.data_month_received)}  "
-            f"↑ {format_bytes(reading.data_month_sent)}"
-        )
         self.totals.setText(
-            f"{reading.network_adapter or 'All adapters'}  ·  since Windows started  "
-            f"↓ {format_bytes(reading.network_received_total_bytes)}   "
+            f"{reading.network_adapter or tr('All adapters')}  ·  "
+            + tr("since Windows started")
+            + f"  ↓ {format_bytes(reading.network_received_total_bytes)}   "
             f"↑ {format_bytes(reading.network_sent_total_bytes)}"
         )
         active = total >= 0.05
-        self.set_chip("Active" if active else "Idle", theme.VIOLET if active else theme.MUTED)
+        self.set_chip(
+            tr("Active") if active else tr("Idle"), theme.VIOLET if active else theme.MUTED
+        )
         self.chart.add_value(total)
+
+
+class DataBarChart(QWidget):
+    """One bar per day for the last 30 days of internet data."""
+
+    LABEL_HEIGHT = 16
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._history: tuple[tuple[str, int, int], ...] = ()
+        self._hover: int | None = None
+        self.setMouseTracking(True)
+        self.setFixedHeight(104)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_history(self, history: tuple[tuple[str, int, int], ...]) -> None:
+        if history != self._history:
+            self._history = history
+            self.update()
+
+    def _geometry(self) -> tuple[float, float, float]:
+        """Bar width, gap and plot height."""
+        count = max(1, len(self._history))
+        gap = 3.0
+        return (self.width() - gap * (count - 1)) / count, gap, self.height() - self.LABEL_HEIGHT - 4
+
+    @staticmethod
+    def _day(iso: str) -> str:
+        day = date.fromisoformat(iso)
+        return f"{day.month}/{day.day}"
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        bar, gap, plot = self._geometry()
+        totals = [received + sent for _, received, sent in self._history]
+        peak = max(totals, default=0)
+        base = QColor(theme.VIOLET)
+        base.setAlpha(150)
+        for index, total in enumerate(totals):
+            height = plot * total / peak if peak else 0.0
+            height = max(height, 2.0 if total else 0.0)
+            color = QColor(theme.ACCENT) if index == len(totals) - 1 else QColor(base)
+            if index == self._hover:
+                color = QColor(theme.TEXT)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            x = index * (bar + gap)
+            painter.drawRoundedRect(QRectF(x, 2 + plot - height, bar, height), 2, 2)
+        painter.setPen(QColor(theme.BORDER))
+        painter.drawLine(0, int(plot + 3), self.width(), int(plot + 3))
+        font = QFont("Segoe UI")
+        font.setPixelSize(10)
+        painter.setFont(font)
+        painter.setPen(QColor(theme.MUTED))
+        label_area = QRectF(0, self.height() - self.LABEL_HEIGHT, self.width(), self.LABEL_HEIGHT)
+        if self._history:
+            painter.drawText(label_area, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                             self._day(self._history[0][0]))
+            painter.drawText(label_area, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                             tr("Today"))
+
+    def mouseMoveEvent(self, event) -> None:
+        bar, gap, _ = self._geometry()
+        index = int(event.position().x() // (bar + gap)) if self._history else None
+        if index is not None and not 0 <= index < len(self._history):
+            index = None
+        if index != self._hover:
+            self._hover = index
+            self.update()
+        if index is not None:
+            day, received, sent = self._history[index]
+            QToolTip.showText(
+                event.globalPosition().toPoint(),
+                f"{self._day(day)}:  ↓ {format_bytes(received)}  ↑ {format_bytes(sent)}",
+                self,
+            )
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        if self._hover is not None:
+            self._hover = None
+            self.update()
+
+
+class DataUsageCard(Card):
+    """Internet data used today and this month, the last 30 days, and the limit."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(tr("Internet data"), "VIOLET", parent)
+        row = QHBoxLayout()
+        row.setSpacing(36)
+        self.today = self._add_column(row, tr("Today"))
+        self.month = self._add_column(row, tr("This month"))
+        row.addStretch(1)
+        self.body.addLayout(row)
+        self.chart = DataBarChart()
+        self.body.addWidget(self.chart)
+        self.limit_bar = UsageBar("VIOLET")
+        self.limit_text = QLabel()
+        self.limit_text.setObjectName("small")
+        self.limit_text.setWordWrap(True)
+        self.body.addWidget(self.limit_bar)
+        self.body.addWidget(self.limit_text)
+        self.body.addStretch(1)
+
+    @staticmethod
+    def _add_column(row: QHBoxLayout, title: str) -> QLabel:
+        column = QVBoxLayout()
+        column.setSpacing(2)
+        heading = QLabel(title)
+        heading.setObjectName("small")
+        value = QLabel("—")
+        value.setObjectName("bigValue")
+        column.addWidget(heading)
+        column.addWidget(value)
+        row.addLayout(column)
+        return value
+
+    def update_data(self, reading: SystemReading, limit_gb: int) -> None:
+        today = reading.data_today_received + reading.data_today_sent
+        month = reading.data_month_received + reading.data_month_sent
+        self.today.setText(format_bytes(today))
+        self.month.setText(format_bytes(month))
+        self.chart.set_history(reading.data_history)
+        if limit_gb > 0:
+            limit = limit_gb * 1024**3
+            percent = month / limit * 100
+            self.limit_bar.setVisible(True)
+            self.limit_bar.set_value(percent)
+            self.limit_text.setText(
+                tr("{used} of {limit} monthly limit").format(
+                    used=format_bytes(month), limit=format_gb(limit_gb)
+                )
+            )
+            color = theme.RED if percent >= 100 else theme.AMBER if percent >= 80 else theme.VIOLET
+            self.set_chip(tr("{percent}% of limit").format(percent=f"{percent:.0f}"), color)
+        else:
+            self.limit_bar.setVisible(False)
+            self.limit_text.setText(
+                tr("No monthly limit set. You can set one in Settings → Network.")
+            )
+            self.chip.hide()
+            self._chip_state = None
+
+    def apply_theme_colors(self) -> None:
+        super().apply_theme_colors()
+        self.chart.update()
+
+
+class DriveRow(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        top = QHBoxLayout()
+        self.name = QLabel()
+        self.name.setObjectName("primary")
+        self.free = QLabel()
+        self.free.setObjectName("muted")
+        top.addWidget(self.name, 1)
+        top.addWidget(self.free)
+        self.bar = UsageBar("PINK")
+        self.detail = QLabel()
+        self.detail.setObjectName("small")
+        layout.addLayout(top)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.detail)
+
+    def set_drive(self, drive: DriveReading) -> None:
+        mount = drive.mount.rstrip("\\") or drive.mount
+        self.name.setText(f"{mount}  {drive.label}" if drive.label else mount)
+        self.free.setText(tr("{free} free").format(free=format_gb(drive.free_gb)))
+        self.bar.set_value(drive.percent)
+        self.detail.setText(
+            tr("{used} of {total} used").format(
+                used=format_gb(drive.used_gb), total=format_gb(drive.total_gb)
+            )
+        )
+
+
+class DrivesCard(Card):
+    """Every drive's free space, not just the Windows drive."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(tr("Drives"), "PINK", parent)
+        self._rows_layout = QVBoxLayout()
+        self._rows_layout.setSpacing(12)
+        self._rows: list[DriveRow] = []
+        self._empty = QLabel(tr("Waiting for data…"))
+        self._empty.setObjectName("muted")
+        self.body.addWidget(self._empty)
+        self.body.addLayout(self._rows_layout)
+        self.body.addStretch(1)
+
+    def update_drives(self, drives: tuple[DriveReading, ...]) -> None:
+        self._empty.setVisible(not drives)
+        self._empty.setText(tr("No drives were found."))
+        while len(self._rows) < len(drives):
+            row = DriveRow()
+            self._rows_layout.addWidget(row)
+            self._rows.append(row)
+        for index, row in enumerate(self._rows):
+            row.setVisible(index < len(drives))
+            if index < len(drives):
+                row.set_drive(drives[index])
+        if drives:
+            worst = max(drive.percent for drive in drives)
+            self.set_chip(
+                tr("{count} drives").format(count=len(drives))
+                if len(drives) != 1
+                else tr("1 drive"),
+                level_color(worst, theme.MUTED),
+            )
 
 
 class GpuRow(QWidget):
@@ -491,18 +715,20 @@ class GpuRow(QWidget):
         has_load = gpu.utilization is not None
         self.bar.setVisible(has_load)
         if not has_load:
-            text = "Live usage isn't available for this graphics adapter."
+            text = tr("Live usage isn't available for this graphics adapter.")
             if gpu.temperature_c is not None:
                 text = f"{format_temperature(gpu.temperature_c)}  ·  {text}"
             self.detail.setText(text)
             self.setToolTip(gpu.error or "")
             return
         self.bar.set_value(gpu.utilization)
-        parts = [f"Load {gpu.utilization:.0f}%"]
+        parts = [tr("Load {percent}%").format(percent=f"{gpu.utilization:.0f}")]
         if gpu.memory_used_mb is not None and gpu.memory_total_mb is not None:
             parts.append(
-                f"Memory {format_gb(gpu.memory_used_mb / 1024)} of "
-                f"{format_gb(gpu.memory_total_mb / 1024)}"
+                tr("Memory {used} of {total}").format(
+                    used=format_gb(gpu.memory_used_mb / 1024),
+                    total=format_gb(gpu.memory_total_mb / 1024),
+                )
             )
         if gpu.temperature_c is not None:
             parts.append(format_temperature(gpu.temperature_c))
@@ -512,11 +738,11 @@ class GpuRow(QWidget):
 
 class GpuCard(Card):
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__("Graphics", "AMBER", parent)
+        super().__init__(tr("Graphics"), "AMBER", parent)
         self._rows_layout = QVBoxLayout()
         self._rows_layout.setSpacing(14)
         self._rows: list[GpuRow] = []
-        self._empty = QLabel("Waiting for data…")
+        self._empty = QLabel(tr("Waiting for data…"))
         self._empty.setObjectName("muted")
         self.body.addWidget(self._empty)
         self.body.addLayout(self._rows_layout)
@@ -525,7 +751,7 @@ class GpuCard(Card):
     def update_gpus(self, gpus: tuple[GpuReading, ...], status: str) -> None:
         self.setToolTip(status)
         self._empty.setVisible(not gpus)
-        self._empty.setText("No graphics adapters were reported by Windows.")
+        self._empty.setText(tr("No graphics adapters were reported by Windows."))
         while len(self._rows) < len(gpus):
             row = GpuRow()
             self._rows_layout.addWidget(row)
@@ -541,18 +767,28 @@ class GpuCard(Card):
             self.set_chip(level_text(peak), level_color(peak, theme.AMBER))
         else:
             count = len(gpus)
-            self.set_chip(f"{count} adapter{'s' if count != 1 else ''}", theme.MUTED)
+            self.set_chip(
+                tr("{count} adapters").format(count=count)
+                if count != 1
+                else tr("1 adapter"),
+                theme.MUTED,
+            )
 
 
 class ProcessCard(Card):
     ROW_HEIGHT = 30
     VISIBLE_ROWS = 10
+    PID_ROLE = Qt.ItemDataRole.UserRole + 1
+
+    # The window saves the order, so the choice survives a restart.
+    sort_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__("Top apps & processes", "GREEN", parent)
-        self.set_chip("Sorted by CPU", theme.ACCENT)
+        super().__init__(tr("Top apps & processes"), "GREEN", parent)
+        self._sort = "cpu"
+        self._update_sort_chip()
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(("Name", "CPU", "Memory"))
+        self.table.setHorizontalHeaderLabels((tr("Name"), tr("CPU"), tr("Memory")))
         self.table.setItemDelegateForColumn(1, UsageBarDelegate("ACCENT", self.table))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -565,6 +801,9 @@ class ProcessCard(Card):
         header = self.table.horizontalHeader()
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         header.setHighlightSections(False)
+        header.setSectionsClickable(True)
+        header.setToolTip(tr("Click CPU or Memory to sort"))
+        header.sectionClicked.connect(self._header_clicked)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
@@ -575,15 +814,87 @@ class ProcessCard(Card):
         )
         self.table.setMinimumHeight(self.ROW_HEIGHT * self.VISIBLE_ROWS + 36)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        footnote = QLabel("CPU is shown as a share of your processor's total capacity.")
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_menu)
+        footnote = QLabel(
+            tr("CPU is shown as a share of your processor's total capacity.")
+            + "  "
+            + tr("Right-click an app for more.")
+        )
         footnote.setObjectName("small")
         self.body.addWidget(self.table)
         self.body.addWidget(footnote)
 
+    def _update_sort_chip(self) -> None:
+        self.set_chip(
+            tr("Sorted by memory") if self._sort == "memory" else tr("Sorted by CPU"),
+            theme.ACCENT,
+        )
+
+    def set_sort(self, sort: str) -> None:
+        self._sort = "memory" if sort == "memory" else "cpu"
+        self._update_sort_chip()
+
     def apply_theme_colors(self) -> None:
         super().apply_theme_colors()
-        self.set_chip("Sorted by CPU", theme.ACCENT)
+        self._chip_state = None
+        self._update_sort_chip()
         self.table.viewport().update()
+
+    def _header_clicked(self, section: int) -> None:
+        if section in (1, 2):
+            self.sort_requested.emit("cpu" if section == 1 else "memory")
+
+    def _show_menu(self, position) -> None:
+        item = self.table.itemAt(position)
+        menu = QMenu(self.table)
+        if item is not None:
+            name_item = self.table.item(item.row(), 0)
+            pid = name_item.data(self.PID_ROLE)
+            name = name_item.text()
+            menu.addAction(tr("End task")).triggered.connect(
+                lambda: self._end_task(pid, name)
+            )
+            menu.addAction(tr("Open file location")).triggered.connect(
+                lambda: self._open_location(pid)
+            )
+            menu.addSeparator()
+        menu.addAction(tr("Sort by CPU")).triggered.connect(
+            lambda: self.sort_requested.emit("cpu")
+        )
+        menu.addAction(tr("Sort by memory")).triggered.connect(
+            lambda: self.sort_requested.emit("memory")
+        )
+        menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _end_task(self, pid: int, name: str) -> None:
+        reason = process_control.protected_reason(pid, name)
+        if reason:
+            dialogs.inform(self, tr("End task"), reason)
+            return
+        if not dialogs.ask(
+            self,
+            tr("End task"),
+            tr(
+                "End {name}? Anything you haven't saved in it will be lost."
+            ).format(name=name),
+            tr("End task"),
+        ):
+            return
+        problem = process_control.end_process(pid, name)
+        if problem:
+            dialogs.warn(self, tr("End task"), problem)
+
+    def _open_location(self, pid: int) -> None:
+        path = process_control.process_path(pid)
+        if path:
+            process_control.show_in_explorer(path)
+        else:
+            dialogs.inform(
+                self,
+                tr("Open file location"),
+                tr("Windows doesn't share where this process is stored."),
+            )
 
     def update_processes(self, processes: tuple[ProcessReading, ...]) -> None:
         self.table.setRowCount(len(processes))
@@ -591,14 +902,21 @@ class ProcessCard(Card):
         for row, process in enumerate(processes):
             name = self._cell(row, 0)
             name.setText(process.name)
-            name.setToolTip(f"{process.name}\nProcess ID: {process.pid}")
+            name.setData(self.PID_ROLE, process.pid)
+            name.setToolTip(
+                tr("{name}\nProcess ID: {pid}").format(name=process.name, pid=process.pid)
+            )
             cpu = self._cell(row, 1)
             cpu.setText(f"{process.cpu_percent:.1f}%")
             cpu.setData(Qt.ItemDataRole.UserRole, process.cpu_percent)
             memory = self._cell(row, 2)
             memory.setText(format_bytes(process.memory_mb * 1024**2))
             memory.setTextAlignment(right)
-            memory.setToolTip(f"{process.memory_percent:.1f}% of installed memory")
+            memory.setToolTip(
+                tr("{percent}% of installed memory").format(
+                    percent=f"{process.memory_percent:.1f}"
+                )
+            )
 
     def _cell(self, row: int, column: int) -> QTableWidgetItem:
         item = self.table.item(row, column)
@@ -653,16 +971,23 @@ class MonitorWindow(QMainWindow):
         self.resize(*FULL_SIZE)
         self.setMinimumSize(*FULL_MINIMUM_SIZE)
 
-        self.cpu_card = GaugeCard("Processor", "ACCENT")
-        self.memory_card = GaugeCard("Memory", "GREEN")
-        self.disk_card = GaugeCard("Storage", "AMBER")
+        self.cpu_card = GaugeCard(tr("Processor"), "ACCENT")
+        self.memory_card = GaugeCard(tr("Memory"), "GREEN")
+        self.disk_card = GaugeCard(tr("Storage"), "AMBER")
         self.network_card = NetworkCard()
         self.gpu_card = GpuCard()
+        self.data_card = DataUsageCard()
+        self.drives_card = DrivesCard()
         self.process_card = ProcessCard()
+        self.process_card.set_sort(settings.value(PROCESS_SORT))
+        self.process_card.sort_requested.connect(
+            lambda sort: settings.set_value(PROCESS_SORT, sort)
+        )
+        settings.changed.connect(self._on_setting_changed)
         self.compact_cpu = CompactIndicator("CPU")
-        self.compact_memory = CompactIndicator("Memory")
+        self.compact_memory = CompactIndicator(tr("Memory"))
         self.compact_gpu = CompactIndicator("GPU")
-        self.compact_network = CompactIndicator("Network")
+        self.compact_network = CompactIndicator(tr("Network"))
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -681,6 +1006,13 @@ class MonitorWindow(QMainWindow):
         sampler.reading_ready.connect(self._show_reading)
         sampler.sample_failed.connect(self._show_error)
 
+    def _on_setting_changed(self, key: str) -> None:
+        if key == PROCESS_SORT:
+            self.process_card.set_sort(self._settings.value(PROCESS_SORT))
+        if key in (PROCESS_SORT, DATA_LIMIT_GB, SPEED_UNIT, TEMPERATURE_UNIT):
+            if self._last_reading is not None:
+                self._show_reading(self._last_reading)
+
     def _make_header(self) -> QHBoxLayout:
         layout = QHBoxLayout()
         layout.setSpacing(12)
@@ -690,7 +1022,7 @@ class MonitorWindow(QMainWindow):
         title_column.setSpacing(0)
         title = QLabel("System Monitor")
         title.setObjectName("appTitle")
-        self.subtitle = QLabel("Starting up…")
+        self.subtitle = QLabel(tr("Starting up…"))
         self.subtitle.setObjectName("muted")
         title_column.addWidget(title)
         title_column.addWidget(self.subtitle)
@@ -698,12 +1030,12 @@ class MonitorWindow(QMainWindow):
         layout.addLayout(title_column)
         layout.addStretch(1)
 
-        self.mode_button = QPushButton(glyph_icon(GLYPH_COMPACT), "  Compact view")
-        self.mode_button.setToolTip("Switch to a small window with just the key numbers")
+        self.mode_button = QPushButton(glyph_icon(GLYPH_COMPACT), "  " + tr("Compact view"))
+        self.mode_button.setToolTip(tr("Switch to a small window with just the key numbers"))
         self.mode_button.clicked.connect(self._toggle_mode)
         self.settings_button = settings_button = QPushButton(glyph_icon(GLYPH_SETTINGS), "")
         settings_button.setObjectName("iconButton")
-        settings_button.setToolTip("Settings")
+        settings_button.setToolTip(tr("Settings"))
         settings_button.clicked.connect(self.open_settings)
         layout.addWidget(self.mode_button)
         layout.addWidget(settings_button)
@@ -719,7 +1051,9 @@ class MonitorWindow(QMainWindow):
         grid.addWidget(self.disk_card, 0, 2)
         grid.addWidget(self.network_card, 1, 0, 1, 2)
         grid.addWidget(self.gpu_card, 1, 2)
-        grid.addWidget(self.process_card, 2, 0, 1, 3)
+        grid.addWidget(self.data_card, 2, 0, 1, 2)
+        grid.addWidget(self.drives_card, 2, 2)
+        grid.addWidget(self.process_card, 3, 0, 1, 3)
         for column in range(3):
             grid.setColumnStretch(column, 1)
 
@@ -755,6 +1089,8 @@ class MonitorWindow(QMainWindow):
             self.disk_card,
             self.network_card,
             self.gpu_card,
+            self.data_card,
+            self.drives_card,
             self.process_card,
         ):
             card.apply_theme_colors()
@@ -820,19 +1156,24 @@ class MonitorWindow(QMainWindow):
         if self._compact:
             self.pages.setCurrentWidget(self.compact_page)
             self.mode_button.setIcon(glyph_icon(GLYPH_EXPAND))
-            self.mode_button.setText("  Full dashboard")
+            self.mode_button.setText("  " + tr("Full dashboard"))
             self.setMinimumSize(0, 0)
             self.resize(*COMPACT_SIZE)
         else:
             self.pages.setCurrentWidget(self.dashboard)
             self.mode_button.setIcon(glyph_icon(GLYPH_COMPACT))
-            self.mode_button.setText("  Compact view")
+            self.mode_button.setText("  " + tr("Compact view"))
             self.setMinimumSize(*FULL_MINIMUM_SIZE)
             self.resize(*FULL_SIZE)
 
     def allow_quit(self) -> None:
         """Let the next close request end the app (Quit, Windows sign-out or shutdown)."""
         self._quitting = True
+
+    def restart_application(self) -> None:
+        """Start a fresh copy, which waits for this one to exit, then quit."""
+        if start_new_copy():
+            self.quit_application()
 
     def quit_application(self) -> None:
         self.allow_quit()
@@ -858,36 +1199,53 @@ class MonitorWindow(QMainWindow):
 
     def _show_reading(self, reading: SystemReading) -> None:
         self._last_reading = reading
-        temperature = format_temperature(reading.cpu_temperature_c, "not available ⓘ")
+        temperature = format_temperature(reading.cpu_temperature_c, tr("not available ⓘ"))
         self.cpu_card.update_gauge(
             reading.cpu_percent,
-            f"Temperature: {temperature}",
-            f"{reading.logical_cpus} logical processors",
-            f"Running for {format_duration(reading.uptime_seconds)}",
+            tr("Temperature: {value}").format(value=temperature),
+            tr("{count} logical processors").format(count=reading.logical_cpus),
+            tr("Running for {duration}").format(
+                duration=format_duration(reading.uptime_seconds)
+            ),
         )
         self.cpu_card.primary.setToolTip(reading.cpu_temperature_status)
 
         self.memory_card.update_gauge(
             reading.memory_percent,
-            f"{format_gb(reading.memory_used_gb)} of {format_gb(reading.memory_total_gb)} used",
-            f"{format_gb(reading.memory_available_gb)} available",
+            tr("{used} of {total} used").format(
+                used=format_gb(reading.memory_used_gb),
+                total=format_gb(reading.memory_total_gb),
+            ),
+            tr("{free} available").format(free=format_gb(reading.memory_available_gb)),
         )
 
         if reading.disk_percent is None:
             self.disk_card.update_gauge(
-                None, f"Drive {reading.disk_name}", "Couldn't read this drive"
+                None,
+                tr("Drive {drive}").format(drive=reading.disk_name),
+                tr("Couldn't read this drive"),
             )
         else:
             self.disk_card.update_gauge(
                 reading.disk_percent,
-                f"{format_gb(reading.disk_used_gb)} of {format_gb(reading.disk_total_gb)} used",
-                f"{format_gb(reading.disk_free_gb)} free on {reading.disk_name}",
+                tr("{used} of {total} used").format(
+                    used=format_gb(reading.disk_used_gb),
+                    total=format_gb(reading.disk_total_gb),
+                ),
+                tr("{free} free on {drive}").format(
+                    free=format_gb(reading.disk_free_gb), drive=reading.disk_name
+                ),
                 self._disk_activity_text(reading),
             )
 
         self.network_card.update_network(reading)
+        self.data_card.update_data(reading, self._settings.value(DATA_LIMIT_GB))
+        self.drives_card.update_drives(reading.drives)
         self.gpu_card.update_gpus(reading.gpus, reading.gpu_status)
-        self.process_card.update_processes(reading.processes)
+        by_memory = self._settings.value(PROCESS_SORT) == "memory"
+        self.process_card.update_processes(
+            reading.processes_by_memory if by_memory else reading.processes
+        )
 
         gpu_loads = [
             gpu.utilization for gpu in reading.gpus if gpu.utilization is not None
@@ -895,17 +1253,22 @@ class MonitorWindow(QMainWindow):
         gpu_load = sum(gpu_loads) / len(gpu_loads) if gpu_loads else None
         self.compact_cpu.set_values(
             f"{reading.cpu_percent:.0f}%",
-            format_temperature(reading.cpu_temperature_c, "Temp not available"),
+            format_temperature(reading.cpu_temperature_c, tr("Temp not available")),
             level_color(reading.cpu_percent, theme.TEXT),
         )
         self.compact_memory.set_values(
             f"{reading.memory_percent:.0f}%",
-            f"{format_gb(reading.memory_used_gb)} of {format_gb(reading.memory_total_gb)}",
+            tr("{used} of {total}").format(
+                used=format_gb(reading.memory_used_gb),
+                total=format_gb(reading.memory_total_gb),
+            ),
             level_color(reading.memory_percent, theme.TEXT),
         )
         self.compact_gpu.set_values(
             f"{gpu_load:.0f}%" if gpu_load is not None else "N/A",
-            f"{len(reading.gpus)} adapter(s)" if reading.gpus else "No adapters",
+            tr("{count} adapter(s)").format(count=len(reading.gpus))
+            if reading.gpus
+            else tr("No adapters"),
             level_color(gpu_load, theme.TEXT) if gpu_load is not None else theme.MUTED,
         )
         self.compact_network.set_values(
@@ -916,17 +1279,23 @@ class MonitorWindow(QMainWindow):
         updated = datetime.fromtimestamp(reading.timestamp).strftime("%H:%M:%S")
         battery = ""
         if reading.battery_percent is not None:
-            state = "charging" if reading.battery_plugged else "on battery"
-            battery = f"  ·  Battery {reading.battery_percent:.0f}% ({state})"
+            state = tr("charging") if reading.battery_plugged else tr("on battery")
+            extra = METRICS_BY_KEY["battery_info"].read(reading).text
+            detail = f", {extra}" if extra != "N/A" else ""
+            battery = "  ·  " + tr("Battery {percent}% ({state})").format(
+                percent=f"{reading.battery_percent:.0f}", state=state + detail
+            )
         self.subtitle.setText(
-            f'<span style="color:{theme.GREEN}">●</span>  Live  ·  updated {updated}{battery}'
+            f'<span style="color:{theme.GREEN}">●</span>  '
+            + tr("Live  ·  updated {time}").format(time=updated)
+            + battery
         )
 
     @staticmethod
     def _disk_activity_text(reading: SystemReading) -> str:
         if reading.disk_read_bytes_per_s is None or reading.disk_write_bytes_per_s is None:
             return ""
-        return (
-            f"Read {format_bytes(reading.disk_read_bytes_per_s)}/s  ·  "
-            f"Write {format_bytes(reading.disk_write_bytes_per_s)}/s"
+        return tr("Read {read}/s  ·  Write {write}/s").format(
+            read=format_bytes(reading.disk_read_bytes_per_s),
+            write=format_bytes(reading.disk_write_bytes_per_s),
         )

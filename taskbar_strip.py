@@ -7,9 +7,19 @@ import os
 import sys
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QScreen
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QPainter,
+    QScreen,
+)
 from PySide6.QtWidgets import QMenu, QWidget
 
+from hover_panel import HoverPanel
+from i18n import tr
 from metrics import CRITICAL, WARNING, Metric, MetricValue, in_order
 from system_monitor import SystemReading
 
@@ -280,6 +290,10 @@ COLUMN_GAP = 14
 LABEL_GAP = 5
 SIDE_PADDING = 8
 DEFAULT_FONT_SIZE = 9.0
+DEFAULT_FONT_FAMILY = "Segoe UI"
+# The mouse must rest on the strip this long before the details panel opens.
+HOVER_DELAY_MS = 350
+HOVER_CHECK_MS = 150
 # How often to follow the taskbar: often while it slides in and out by itself,
 # and often enough otherwise to step aside soon after a full-screen app starts.
 TRACK_AUTO_HIDE_MS = 150
@@ -295,8 +309,10 @@ LEVEL_COLORS = {
 Column = tuple[list[Metric], int, int]
 
 
-def strip_font(points: float = DEFAULT_FONT_SIZE) -> QFont:
-    font = QFont("Segoe UI")
+def strip_font(
+    points: float = DEFAULT_FONT_SIZE, family: str = DEFAULT_FONT_FAMILY
+) -> QFont:
+    font = QFont(family)
     font.setPointSizeF(points)
     return font
 
@@ -307,7 +323,7 @@ def layout_columns(metrics: list[Metric], rows: int, font_metrics: QFontMetrics)
     for start in range(0, len(metrics), rows):
         column = metrics[start : start + rows]
         label_width = max(font_metrics.horizontalAdvance(m.short) for m in column)
-        value_width = max(font_metrics.horizontalAdvance(m.sample) for m in column)
+        value_width = max(font_metrics.horizontalAdvance(m.sample_text()) for m in column)
         columns.append((column, label_width, value_width))
     return columns
 
@@ -326,7 +342,11 @@ def paint_columns(
     light_theme: bool,
     colored: bool,
     font: QFont,
+    item_colors: dict[str, str] | None = None,
 ) -> None:
+    """Draw the columns. `item_colors` maps a metric key to its own text color;
+    warning colors still win while "color warnings" is on."""
+    item_colors = item_colors or {}
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     painter.setFont(font)
     line_height = QFontMetrics(font).height()
@@ -344,7 +364,7 @@ def paint_columns(
             value = values.get(metric.key, MetricValue("--"))
             painter.setPen(label_color)
             painter.drawText(QRectF(x, y, label_width, line_height), alignment, metric.short)
-            color = text_color
+            color = QColor(item_colors.get(metric.key, text_color.name()))
             if colored and value.level in level_colors:
                 color = QColor(level_colors[value.level])
             painter.setPen(color)
@@ -391,7 +411,7 @@ class TaskbarStrip(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setToolTip("Drag to move · double-click to open · right-click for options")
+        self._tooltip = tr("Drag to move · double-click to open · right-click for options")
         self._settings = QSettings()
         self._light_theme = taskbar_uses_light_theme()
         self._colored = True
@@ -408,23 +428,39 @@ class TaskbarStrip(QWidget):
         self._metrics: list[Metric] = []
         self._values: dict[str, MetricValue] = {}
         self._columns: list[Column] = []
+        self._font_size = DEFAULT_FONT_SIZE
+        self._font_family = DEFAULT_FONT_FAMILY
         self._font = strip_font()
         self._font_metrics = QFontMetrics(self._font)
+        self._background_opacity = 0  # percent
+        self._item_colors: dict[str, str] = {}
+        self._reading: SystemReading | None = None
+        self._panel = HoverPanel()
+        self._hover_enabled = True
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(HOVER_DELAY_MS)
+        self._hover_timer.timeout.connect(self._show_panel)
+        self._hover_check = QTimer(self)
+        self._hover_check.setInterval(HOVER_CHECK_MS)
+        self._hover_check.timeout.connect(self._check_hover)
         self._migrate_position()
 
         # Owned by the strip, which the taskbar owns, so it opens above both.
         self._menu = QMenu(self)
-        self._menu.addAction("Open System Monitor").triggered.connect(
+        self._menu.addAction(tr("Open System Monitor")).triggered.connect(
             self.show_monitor_requested
         )
-        self._menu.addAction("Edit layout…").triggered.connect(self.settings_requested)
+        self._menu.addAction(tr("Edit layout…")).triggered.connect(self.settings_requested)
         self._menu.addSeparator()
-        self._menu.addAction("Move back to default spot").triggered.connect(
+        self._menu.addAction(tr("Move back to default spot")).triggered.connect(
             self._reset_position
         )
-        self._menu.addAction("Hide from taskbar").triggered.connect(self.hide_requested)
+        self._menu.addAction(tr("Hide from taskbar")).triggered.connect(self.hide_requested)
         self._menu.addSeparator()
-        self._menu.addAction("Quit System Monitor").triggered.connect(self.quit_requested)
+        self._menu.addAction(tr("Quit System Monitor")).triggered.connect(
+            self.quit_requested
+        )
 
         self._tracker = QTimer(self)
         self._tracker.setInterval(TRACK_DOCKED_MS)
@@ -438,6 +474,7 @@ class TaskbarStrip(QWidget):
         app.screenRemoved.connect(lambda _screen: QTimer.singleShot(0, self._place))
         app.primaryScreenChanged.connect(lambda _screen: self._place())
         self.set_layout(["upload", "download", "cpu", "ram"], 2)
+        self.set_hover_panel(True)
 
     def _watch_screen(self, screen: QScreen) -> None:
         screen.availableGeometryChanged.connect(lambda _area: self._place())
@@ -483,9 +520,33 @@ class TaskbarStrip(QWidget):
         self.update()
 
     def set_font_size(self, points: float) -> None:
-        self._font = strip_font(points)
+        self._font_size = points
+        self._apply_font()
+
+    def set_font_family(self, family: str) -> None:
+        self._font_family = family or DEFAULT_FONT_FAMILY
+        self._apply_font()
+
+    def _apply_font(self) -> None:
+        self._font = strip_font(self._font_size, self._font_family)
         self._font_metrics = QFontMetrics(self._font)
         self.set_layout(self._keys, self._rows)
+
+    def set_background_opacity(self, percent: int) -> None:
+        """How solid the backdrop behind the text is, 0 (none) to 100 percent."""
+        self._background_opacity = max(0, min(100, percent))
+        self.update()
+
+    def set_item_colors(self, colors: dict[str, str]) -> None:
+        self._item_colors = dict(colors)
+        self.update()
+
+    def set_hover_panel(self, enabled: bool) -> None:
+        self._hover_enabled = enabled
+        # The panel replaces the plain tooltip.
+        self.setToolTip("" if enabled else self._tooltip)
+        if not enabled:
+            self._hide_panel()
 
     def set_hide_in_full_screen(self, hide: bool) -> None:
         self._hide_in_full_screen = hide
@@ -568,10 +629,51 @@ class TaskbarStrip(QWidget):
         self._place()
 
     def update_reading(self, reading: SystemReading) -> None:
+        self._reading = reading
         self._values = {metric.key: metric.read(reading) for metric in self._metrics}
         self._light_theme = taskbar_uses_light_theme()
         if self.isVisible():
             self.update()
+        if self._panel.isVisible():
+            self._panel.set_reading(reading)
+
+    # -- details panel ----------------------------------------------------
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        if self._hover_enabled and self._reading is not None and not self._menu.isVisible():
+            self._hover_timer.start()
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self._hover_timer.stop()
+
+    def _show_panel(self) -> None:
+        if not (self._hover_enabled and self.isVisible() and self._reading is not None):
+            return
+        if self._menu.isVisible() or self._drag_offset is not None:
+            return
+        if not self.frameGeometry().contains(QCursor.pos()):
+            return
+        screen = QGuiApplication.screenAt(self.frameGeometry().center())
+        screen = screen or QGuiApplication.primaryScreen()
+        self._panel.set_reading(self._reading)
+        self._panel.show_above(self.frameGeometry(), self._bar, screen.geometry())
+        self._hover_check.start()
+
+    def _check_hover(self) -> None:
+        """Close the panel once the mouse is on neither the strip nor the panel."""
+        cursor = QCursor.pos()
+        inside = self.frameGeometry().contains(cursor) or self._panel.frameGeometry().contains(
+            cursor
+        )
+        if not inside or not self.isVisible() or self._menu.isVisible():
+            self._hide_panel()
+
+    def _hide_panel(self) -> None:
+        self._hover_timer.stop()
+        self._hover_check.stop()
+        self._panel.hide()
 
     def _track_taskbar(self) -> None:
         """Follow the taskbar: auto-hide, another screen, or an Explorer restart."""
@@ -609,9 +711,16 @@ class TaskbarStrip(QWidget):
     def paintEvent(self, event) -> None:
         del event
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         # A nearly invisible fill keeps the whole strip clickable; fully
         # transparent pixels let mouse events fall through on Windows.
         painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        if self._background_opacity > 0:
+            backdrop = QColor("#f3f3f3" if self._light_theme else "#202020")
+            backdrop.setAlpha(round(255 * self._background_opacity / 100))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(backdrop)
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 3, -1, -3), 6, 6)
         paint_columns(
             painter,
             self.height(),
@@ -620,6 +729,7 @@ class TaskbarStrip(QWidget):
             self._light_theme,
             self._colored,
             self._font,
+            self._item_colors,
         )
 
     def _menu_position(self, cursor: QPoint) -> QPoint:
@@ -640,6 +750,7 @@ class TaskbarStrip(QWidget):
         return QPoint(x, max(area.top(), y))
 
     def mousePressEvent(self, event) -> None:
+        self._hide_panel()
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_offset = event.globalPosition().x() - self.x()
         elif event.button() == Qt.MouseButton.RightButton:

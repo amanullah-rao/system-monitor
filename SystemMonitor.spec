@@ -45,7 +45,8 @@ a = Analysis(
     ["main.py"],
     datas=[("assets/app_icon.ico", "assets")],
     # Imported inside a try block; listed so it's bundled when installed.
-    hiddenimports=["pynvml"],
+    # translations_ko is imported only when Korean is chosen.
+    hiddenimports=["pynvml", "translations_ko"],
     # ssl stays in: "Check for updates" asks GitHub over HTTPS.
     excludes=["tkinter", "unittest", "pydoc", "PySide6.QtQml", "PySide6.QtQuick"],
 )

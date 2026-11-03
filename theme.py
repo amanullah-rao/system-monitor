@@ -20,6 +20,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QWidget
 
+from i18n import N_, tr
+
 DARK, LIGHT, MATCH_WINDOWS = "dark", "light", "system"
 
 PALETTES: dict[str, dict[str, str]] = {
@@ -76,7 +78,7 @@ PALETTES: dict[str, dict[str, str]] = {
         "LIME": "#65a30d",
     },
 }
-THEME_CHOICES = ((DARK, "Dark"), (LIGHT, "Light"), (MATCH_WINDOWS, "Match Windows"))
+THEME_CHOICES = ((DARK, N_("Dark")), (LIGHT, N_("Light")), (MATCH_WINDOWS, N_("Match Windows")))
 
 # The current colors, as module attributes. Code that should follow a theme
 # change reads them as theme.TEXT (or theme.color("TEXT")) when it paints,
@@ -121,12 +123,12 @@ def level_color(percent: float | None, normal: str) -> str:
 
 def level_text(percent: float | None) -> str:
     if percent is None:
-        return "Unavailable"
+        return tr("Unavailable")
     if percent >= 90:
-        return "High"
+        return tr("High")
     if percent >= 75:
-        return "Busy"
-    return "Normal"
+        return tr("Busy")
+    return tr("Normal")
 
 
 def glyph_icon(glyph: str, color: str | None = None, size: int = 32) -> QIcon:
@@ -206,6 +208,9 @@ QPushButton#pill {{
     border-radius: 14px; padding: 5px 12px;
 }}
 QPushButton#pill:hover {{ border-color: {ACCENT}; color: {TEXT}; }}
+QPushButton#pill:checked {{
+    color: {TEXT}; background: rgba(56, 189, 248, 45); border-color: {ACCENT};
+}}
 QPushButton#pill:disabled {{ color: {DISABLED}; border-color: {BORDER}; }}
 QPushButton {{
     color: {TEXT}; background: {SURFACE_RAISED}; border: 1px solid {CONTROL_BORDER};
@@ -239,6 +244,16 @@ QComboBox QAbstractItemView {{
     color: {TEXT}; background: {SURFACE}; border: 1px solid {BORDER};
     selection-background-color: {HOVER}; selection-color: {TEXT};
 }}
+QSpinBox {{
+    color: {TEXT}; background: {SURFACE_RAISED}; border: 1px solid {CONTROL_BORDER};
+    border-radius: 7px; padding: 5px 8px;
+}}
+QSpinBox:hover {{ border-color: {ACCENT}; }}
+QSpinBox:disabled {{ color: {DISABLED}; }}
+QProgressBar {{
+    background: {TRACK}; border: none; border-radius: 3px;
+}}
+QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
 QScrollArea {{ border: none; }}
 QListWidget {{
     color: {TEXT}; background: {SURFACE_RAISED}; border: 1px solid {CONTROL_BORDER};

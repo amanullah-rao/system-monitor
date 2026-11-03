@@ -12,6 +12,14 @@ from dataclasses import dataclass, replace
 
 import psutil
 
+from collectors import (
+    AdapterRates,
+    AdapterReading,
+    BatteryCollector,
+    DriveCollector,
+    DriveReading,
+    battery_seconds_left,
+)
 from data_usage import DataUsageTracker
 from sensor_app import (
     SESSION_ENDING,
@@ -74,6 +82,15 @@ class SystemReading:
     cpu_temperature_status: str
     processes: tuple[ProcessReading, ...]
     timestamp: float
+    # Added later; defaults keep older ways of building a reading working.
+    cpu_per_core: tuple[float, ...] = ()
+    adapters: tuple[AdapterReading, ...] = ()
+    drives: tuple[DriveReading, ...] = ()
+    processes_by_memory: tuple[ProcessReading, ...] = ()
+    battery_seconds_left: float | None = None
+    battery_power_w: float | None = None  # positive charging, negative discharging
+    # (ISO date, received bytes, sent bytes) for the last 30 days, oldest first.
+    data_history: tuple[tuple[str, int, int], ...] = ()
 
 
 # Keeps PowerShell from flashing a console window when the app runs under
@@ -499,6 +516,14 @@ class _SystemProcessInformation(ctypes.Structure):
     ]
 
 
+def rank_processes(
+    readings: list[ProcessReading], limit: int = 10
+) -> tuple[tuple[ProcessReading, ...], tuple[ProcessReading, ...]]:
+    by_cpu = sorted(readings, key=lambda process: process.cpu_percent, reverse=True)
+    by_memory = sorted(readings, key=lambda process: process.memory_mb, reverse=True)
+    return tuple(by_cpu[:limit]), tuple(by_memory[:limit])
+
+
 class WindowsProcessSnapshot:
     """Read every process in one NtQuerySystemInformation call.
 
@@ -537,7 +562,8 @@ class WindowsProcessSnapshot:
 
     def top_processes(
         self, logical_cpus: int, total_memory: int, limit: int = 10
-    ) -> tuple[ProcessReading, ...]:
+    ) -> tuple[tuple[ProcessReading, ...], tuple[ProcessReading, ...]]:
+        """The busiest processes by CPU, and the biggest by memory."""
         self._snapshot()
         now = time.monotonic()
         current: dict[int, tuple[int, int, float]] = {}
@@ -578,8 +604,7 @@ class WindowsProcessSnapshot:
                 break
             offset += entry.NextEntryOffset
         self._previous = current
-        readings.sort(key=lambda process: process.cpu_percent, reverse=True)
-        return tuple(readings[:limit])
+        return rank_processes(readings, limit)
 
 
 class SystemMonitor:
@@ -595,6 +620,11 @@ class SystemMonitor:
         self._data_usage = DataUsageTracker()
         self._gpu_temperatures: dict[str, float] = {}
         self._gpu_temperatures_read = -float("inf")
+        self._data_history: tuple[tuple[str, int, int], ...] = ()
+        self._data_history_read = -float("inf")
+        self._drives = DriveCollector()
+        self._adapter_rates = AdapterRates()
+        self._battery_power = BatteryCollector()
         self._previous_disk_io = self._read_disk_io()
         self._boot_time = psutil.boot_time()
         self._previous_time = time.monotonic()
@@ -652,7 +682,7 @@ class SystemMonitor:
             disk_total_gb = None
             disk_free_gb = None
 
-        processes = self._read_processes()
+        processes, processes_by_memory = self._read_processes()
         cpu_temperature_c, cpu_temperature_status = (
             self._cpu_temperature_collector.read()
         )
@@ -688,7 +718,24 @@ class SystemMonitor:
             cpu_temperature_status=cpu_temperature_status,
             processes=processes,
             timestamp=time.time(),
+            cpu_per_core=tuple(psutil.cpu_percent(interval=None, percpu=True)),
+            adapters=self._adapter_rates.read(),
+            drives=self._drives.read(),
+            processes_by_memory=processes_by_memory,
+            battery_seconds_left=battery_seconds_left(battery),
+            battery_power_w=self._battery_power.read(battery is not None),
+            data_history=self._read_data_history(),
         )
+
+    def _read_data_history(self) -> tuple[tuple[str, int, int], ...]:
+        # Changes slowly (and the last bar grows steadily), so every 5 s is plenty.
+        if time.monotonic() - self._data_history_read >= 5:
+            self._data_history = tuple(
+                (day.isoformat(), received, sent)
+                for day, received, sent in self._data_usage.last_days(30)
+            )
+            self._data_history_read = time.monotonic()
+        return self._data_history
 
     def _read_gpus(self) -> tuple[GpuReading, ...]:
         """NVML readings, with temperatures from the sensor helper where NVML has none.
@@ -739,7 +786,9 @@ class SystemMonitor:
         except (OSError, RuntimeError):
             return None
 
-    def _read_processes(self) -> tuple[ProcessReading, ...]:
+    def _read_processes(
+        self,
+    ) -> tuple[tuple[ProcessReading, ...], tuple[ProcessReading, ...]]:
         if self._process_snapshot is not None:
             try:
                 return self._process_snapshot.top_processes(
@@ -750,7 +799,9 @@ class SystemMonitor:
                 self._process_snapshot = None
         return self._read_processes_with_psutil()
 
-    def _read_processes_with_psutil(self) -> tuple[ProcessReading, ...]:
+    def _read_processes_with_psutil(
+        self,
+    ) -> tuple[tuple[ProcessReading, ...], tuple[ProcessReading, ...]]:
         readings = []
         active_pids = set()
         total_memory = psutil.virtual_memory().total
@@ -785,5 +836,4 @@ class SystemMonitor:
 
         for stale_pid in self._processes.keys() - active_pids:
             self._processes.pop(stale_pid, None)
-        readings.sort(key=lambda process: process.cpu_percent, reverse=True)
-        return tuple(readings[:10])
+        return rank_processes(readings)

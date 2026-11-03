@@ -1,15 +1,25 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Amanullah
 
+import os
 import sys
 from collections.abc import Callable
 from html import escape
 
 from PySide6.QtCore import QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication, QPainter
+from PySide6.QtGui import (
+    QColor,
+    QFontDatabase,
+    QFontMetrics,
+    QGuiApplication,
+    QIcon,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
+    QColorDialog,
     QComboBox,
     QDialog,
     QFrame,
@@ -18,34 +28,54 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
+    QProgressBar,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+import app_info
+import dialogs
+import diagnostics
+import i18n
+import theme
+from i18n import N_, tr
 from metrics import (
     METRICS,
-    PREVIEW_VALUES,
     STRIP_PRESETS,
     TRAY_ICON_CHOICES,
     MetricValue,
     in_order,
+    preview_values,
 )
 from settings import (
+    ALERT_BATTERY_PERCENT,
+    ALERT_CPU_PERCENT,
+    ALERT_DRIVE_FREE_PERCENT,
+    ALERT_RAM_PERCENT,
     ALERTS_ENABLED,
     CLOSE_TO_TRAY,
+    DATA_LIMIT_GB,
+    LANGUAGE,
     MANAGE_SENSOR_APP,
-    REFRESH_SECONDS,
-    START_MINIMIZED,
     NETWORK_ADAPTER,
+    REFRESH_SECONDS,
+    SPEED_UNIT,
+    START_MINIMIZED,
+    STRIP_BACKGROUND_OPACITY,
     STRIP_COLORED,
+    STRIP_FONT_FAMILY,
     STRIP_FONT_SIZE,
     STRIP_HIDE_FULL_SCREEN,
+    STRIP_HOVER_PANEL,
     STRIP_ITEMS,
     STRIP_ROWS,
     STRIP_SCREEN,
     STRIP_VISIBLE,
+    TEMPERATURE_UNIT,
     THEME,
     TRAY_ICON,
     AppSettings,
@@ -53,8 +83,6 @@ from settings import (
     is_autostart_enabled,
     set_autostart,
 )
-import app_info
-import diagnostics
 from system_monitor import network_adapters
 from taskbar_strip import (
     columns_width,
@@ -65,18 +93,64 @@ from taskbar_strip import (
     screen_device_name,
     strip_font,
 )
-import theme
 from theme import THEME_CHOICES, make_app_icon, match_title_bar
-from updates import CURRENT, NEWER, NO_RELEASES, UpdateChecker
-
-REFRESH_CHOICES = (
-    (0.5, "Every ½ second"),
-    (1.0, "Every second"),
-    (2.0, "Every 2 seconds"),
-    (5.0, "Every 5 seconds"),
+from updates import (
+    CURRENT,
+    NEWER,
+    NO_RELEASES,
+    ReleaseInfo,
+    UpdateChecker,
+    UpdateDownloader,
 )
-ROW_CHOICES = ((2, "Two lines (stacked)"), (1, "One line"))
-FONT_CHOICES = ((8.0, "Small"), (9.0, "Normal"), (10.0, "Large"), (11.0, "Extra large"))
+
+# Choice labels are English and marked with N_; they go through tr() when shown.
+REFRESH_CHOICES = (
+    (0.5, N_("Every ½ second")),
+    (1.0, N_("Every second")),
+    (2.0, N_("Every 2 seconds")),
+    (5.0, N_("Every 5 seconds")),
+)
+ROW_CHOICES = ((2, N_("Two lines (stacked)")), (1, N_("One line")))
+FONT_SIZE_CHOICES = (
+    (8.0, N_("Small")),
+    (9.0, N_("Default")),
+    (10.0, N_("Large")),
+    (11.0, N_("Extra large")),
+)
+BACKGROUND_CHOICES = (
+    (0, N_("None")),
+    (25, N_("Subtle")),
+    (50, N_("Medium")),
+    (75, N_("Strong")),
+)
+TEMPERATURE_CHOICES = (("C", N_("Celsius (°C)")), ("F", N_("Fahrenheit (°F)")))
+SPEED_CHOICES = (
+    ("bytes", N_("Bytes per second (KB/s, MB/s)")),
+    ("bits", N_("Bits per second (Kbps, Mbps)")),
+)
+# Fonts offered for the taskbar strip, when they're installed.
+STRIP_FONTS = (
+    "Segoe UI",
+    "Segoe UI Variable Text",
+    "Calibri",
+    "Arial",
+    "Tahoma",
+    "Verdana",
+    "Consolas",
+    "Cascadia Mono",
+    "Malgun Gothic",
+)
+COLOR_CHOICES = (
+    (N_("White"), "#ffffff"),
+    (N_("Red"), "#f87171"),
+    (N_("Orange"), "#fb923c"),
+    (N_("Yellow"), "#facc15"),
+    (N_("Green"), "#4ade80"),
+    (N_("Cyan"), "#22d3ee"),
+    (N_("Blue"), "#60a5fa"),
+    (N_("Violet"), "#a78bfa"),
+    (N_("Pink"), "#f472b6"),
+)
 
 
 def screen_choices() -> list[tuple[str, str]]:
@@ -84,28 +158,41 @@ def screen_choices() -> list[tuple[str, str]]:
     primary = QGuiApplication.primaryScreen()
     monitors = list_monitors()
     taskbars = find_taskbars(monitors)
-    choices = [("", "Main screen")]
+    choices = [("", tr("Main screen"))]
     for number, screen in enumerate(QGuiApplication.screens(), start=1):
         device = screen_device_name(screen, monitors)
         size = screen.geometry().size() * screen.devicePixelRatio()
-        label = f"Screen {number}: {screen.model() or device} ({size.width()}×{size.height()})"
+        label = tr("Screen {number}: {name} ({width}×{height})").format(
+            number=number,
+            name=screen.model() or device,
+            width=size.width(),
+            height=size.height(),
+        )
         if screen == primary:
-            label += " · main"
+            label += " · " + tr("main")
         if taskbars and device not in taskbars:
-            label += " · no taskbar"
+            label += " · " + tr("no taskbar")
         choices.append((device, label))
     return choices
 
 
 def adapter_choices(saved: str) -> list[tuple[str, str]]:
     """(adapter name, label) for the network picker; "" measures all of them."""
-    choices = [("", "All adapters")]
+    choices = [("", tr("All adapters"))]
     adapters = network_adapters()
     for name, connected in adapters:
-        choices.append((name, name if connected else f"{name} (not connected)"))
+        choices.append(
+            (name, name if connected else tr("{name} (not connected)").format(name=name))
+        )
     if saved and saved not in {name for name, _ in adapters}:
-        choices.append((saved, f"{saved} (not found)"))
+        choices.append((saved, tr("{name} (not found)").format(name=saved)))
     return choices
+
+
+def strip_font_choices() -> list[tuple[str, str]]:
+    installed = set(QFontDatabase.families())
+    families = [family for family in STRIP_FONTS if family in installed]
+    return [(family, family) for family in families] or [("Segoe UI", "Segoe UI")]
 
 
 def fill_combo(combo: QComboBox, choices, current) -> None:
@@ -118,6 +205,10 @@ def fill_combo(combo: QComboBox, choices, current) -> None:
     combo.blockSignals(False)
 
 
+def translated(choices) -> list[tuple[object, str]]:
+    return [(value, tr(label)) for value, label in choices]
+
+
 class NoWheelComboBox(QComboBox):
     """A combo box that leaves the mouse wheel to the page.
 
@@ -127,6 +218,21 @@ class NoWheelComboBox(QComboBox):
 
     def wheelEvent(self, event) -> None:
         event.ignore()
+
+
+class NoWheelSpinBox(QSpinBox):
+    """The same for number boxes."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+def percent_box(minimum: int, maximum: int, suffix: str = " %") -> NoWheelSpinBox:
+    box = NoWheelSpinBox()
+    box.setRange(minimum, maximum)
+    box.setSuffix(suffix)
+    box.setMinimumWidth(96)
+    return box
 
 
 class ToggleSwitch(QAbstractButton):
@@ -181,10 +287,19 @@ class StripPreview(QWidget):
         super().__init__(parent)
         self._font = strip_font()
         self._columns = []
+        self._colors: dict[str, str] = {}
         self.setFixedHeight(48)
 
-    def set_layout(self, keys: list[str], rows: int, font_size: float) -> None:
-        self._font = strip_font(font_size)
+    def set_layout(
+        self,
+        keys: list[str],
+        rows: int,
+        font_size: float,
+        font_family: str = "Segoe UI",
+        colors: dict[str, str] | None = None,
+    ) -> None:
+        self._font = strip_font(font_size, font_family)
+        self._colors = colors or {}
         self._columns = layout_columns(in_order(keys), rows, QFontMetrics(self._font))
         self.update()
 
@@ -199,14 +314,28 @@ class StripPreview(QWidget):
         # Right-aligned like the real strip, which sits next to the clock.
         offset = max(0, self.width() - columns_width(self._columns) - 8)
         painter.translate(offset, 0)
-        values = {key: MetricValue(text) for key, text in PREVIEW_VALUES.items()}
+        values = {key: MetricValue(text) for key, text in preview_values().items()}
         paint_columns(
-            painter, self.height(), self._columns, values, False, False, self._font
+            painter, self.height(), self._columns, values, False, False, self._font,
+            self._colors,
         )
 
 
+def swatch(color: str | None) -> QIcon:
+    """A small colored square for a menu or list entry."""
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QColor(theme.CONTROL_BORDER))
+    painter.setBrush(QColor(color) if color else Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(QRectF(1.5, 1.5, 13, 13), 3, 3)
+    painter.end()
+    return QIcon(pixmap)
+
+
 class StripLayoutEditor(QWidget):
-    """Choose, order and group what the taskbar strip shows."""
+    """Choose, order, color and group what the taskbar strip shows."""
 
     def __init__(self, settings: AppSettings) -> None:
         super().__init__()
@@ -215,11 +344,13 @@ class StripLayoutEditor(QWidget):
         layout.setContentsMargins(16, 12, 16, 14)
         layout.setSpacing(6)
 
-        heading = QLabel("Layout and order")
+        heading = QLabel(tr("Layout and order"))
         heading.setObjectName("primary")
         note = QLabel(
-            "Tick what to show and use the arrows (or drag) to set the order. "
-            "With two lines, each pair in the list shares a column."
+            tr(
+                "Tick what to show and use the arrows (or drag) to set the order. "
+                "With two lines, each pair in the list shares a column."
+            )
         )
         note.setObjectName("small")
         note.setWordWrap(True)
@@ -231,14 +362,14 @@ class StripLayoutEditor(QWidget):
         layout.addWidget(self.preview)
         layout.addSpacing(6)
 
-        presets_label = QLabel("Quick presets")
+        presets_label = QLabel(tr("Quick presets"))
         presets_label.setObjectName("small")
         layout.addWidget(presets_label)
         presets = QGridLayout()
         presets.setHorizontalSpacing(8)
         presets.setVerticalSpacing(8)
         for index, (name, keys) in enumerate(STRIP_PRESETS):
-            button = QPushButton(name)
+            button = QPushButton(tr(name))
             button.setObjectName("pill")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _=False, keys=keys: self._apply_preset(keys))
@@ -256,12 +387,16 @@ class StripLayoutEditor(QWidget):
         self.list.model().rowsMoved.connect(self._save)
         buttons = QVBoxLayout()
         buttons.setSpacing(8)
-        up = QPushButton("▲  Move up")
-        down = QPushButton("▼  Move down")
+        up = QPushButton("▲  " + tr("Move up"))
+        down = QPushButton("▼  " + tr("Move down"))
+        self._color_button = QPushButton(tr("Text color…"))
+        self._color_button.setToolTip(tr("Pick a color for the selected reading"))
         up.clicked.connect(lambda: self._move(-1))
         down.clicked.connect(lambda: self._move(1))
+        self._color_button.clicked.connect(self._pick_color)
         buttons.addWidget(up)
         buttons.addWidget(down)
+        buttons.addWidget(self._color_button)
         buttons.addStretch(1)
         editor.addWidget(self.list, 1)
         editor.addLayout(buttons)
@@ -269,11 +404,11 @@ class StripLayoutEditor(QWidget):
         layout.addSpacing(6)
 
         rows_line = QHBoxLayout()
-        rows_label = QLabel("Lines")
+        rows_label = QLabel(tr("Lines"))
         rows_label.setObjectName("primary")
         self.rows = NoWheelComboBox()
         for rows, label in ROW_CHOICES:
-            self.rows.addItem(label, rows)
+            self.rows.addItem(tr(label), rows)
         self.rows.currentIndexChanged.connect(
             lambda: self._settings.set_value(STRIP_ROWS, self.rows.currentData())
         )
@@ -290,16 +425,29 @@ class StripLayoutEditor(QWidget):
                 keys.append(item.data(Qt.ItemDataRole.UserRole))
         return keys
 
+    def _refresh_preview(self, keys: list[str]) -> None:
+        self.preview.set_layout(
+            keys,
+            self._settings.value(STRIP_ROWS),
+            self._settings.value(STRIP_FONT_SIZE),
+            self._settings.value(STRIP_FONT_FAMILY),
+            self._settings.colors(),
+        )
+
     def sync(self) -> None:
         saved = [metric.key for metric in in_order(self._settings.keys(STRIP_ITEMS))]
         rows = self._settings.value(STRIP_ROWS)
+        colors = self._settings.colors()
         # Rebuild only when the list disagrees, so an unticked item stays put.
         if self.list.count() != len(METRICS) or self._checked_keys() != saved:
             self.list.blockSignals(True)
             self.list.clear()
             unchecked = [metric for metric in METRICS if metric.key not in saved]
             for metric in in_order(saved) + unchecked:
-                item = QListWidgetItem(f"{metric.name}   ·   shows as “{metric.short}”")
+                item = QListWidgetItem(
+                    f"{tr(metric.name)}   ·   "
+                    + tr("shows as “{short}”").format(short=metric.short)
+                )
                 item.setData(Qt.ItemDataRole.UserRole, metric.key)
                 item.setFlags(
                     Qt.ItemFlag.ItemIsEnabled
@@ -312,10 +460,13 @@ class StripLayoutEditor(QWidget):
                 )
                 self.list.addItem(item)
             self.list.blockSignals(False)
+        for row in range(self.list.count()):
+            item = self.list.item(row)
+            item.setIcon(swatch(colors.get(item.data(Qt.ItemDataRole.UserRole))))
         self.rows.blockSignals(True)
         self.rows.setCurrentIndex(max(0, self.rows.findData(rows)))
         self.rows.blockSignals(False)
-        self.preview.set_layout(saved, rows, self._settings.value(STRIP_FONT_SIZE))
+        self._refresh_preview(saved)
 
     def _save(self, *_) -> None:
         keys = self._checked_keys()
@@ -325,9 +476,7 @@ class StripLayoutEditor(QWidget):
             self.sync()
             return
         self._settings.set_keys(STRIP_ITEMS, keys)
-        self.preview.set_layout(
-            keys, self._settings.value(STRIP_ROWS), self._settings.value(STRIP_FONT_SIZE)
-        )
+        self._refresh_preview(keys)
 
     def _move(self, step: int) -> None:
         row = self.list.currentRow()
@@ -341,6 +490,43 @@ class StripLayoutEditor(QWidget):
         self.list.blockSignals(False)
         self._save()
 
+    def _pick_color(self) -> None:
+        item = self.list.currentItem()
+        if item is None:
+            dialogs.inform(
+                self, tr("Text color"), tr("Select a reading in the list first.")
+            )
+            return
+        key = item.data(Qt.ItemDataRole.UserRole)
+        menu = QMenu(self)
+        for name, color in COLOR_CHOICES:
+            menu.addAction(swatch(color), tr(name)).triggered.connect(
+                lambda _=False, color=color: self._set_color(key, color)
+            )
+        menu.addSeparator()
+        menu.addAction(tr("Other color…")).triggered.connect(
+            lambda: self._custom_color(key)
+        )
+        menu.addAction(tr("Default color")).triggered.connect(
+            lambda: self._set_color(key, None)
+        )
+        menu.exec(self._color_button.mapToGlobal(self._color_button.rect().bottomLeft()))
+
+    def _custom_color(self, key: str) -> None:
+        current = QColor(self._settings.colors().get(key, "#ffffff"))
+        chosen = QColorDialog.getColor(current, self, tr("Text color"))
+        if chosen.isValid():
+            self._set_color(key, chosen.name())
+
+    def _set_color(self, key: str, color: str | None) -> None:
+        colors = self._settings.colors()
+        if color is None:
+            colors.pop(key, None)
+        else:
+            colors[key] = color
+        self._settings.set_colors(colors)
+        self.sync()
+
     def _apply_preset(self, keys: tuple[str, ...]) -> None:
         self._settings.set_keys(STRIP_ITEMS, list(keys))
         self.list.clear()
@@ -348,7 +534,9 @@ class StripLayoutEditor(QWidget):
 
 
 class AboutPanel(QWidget):
-    def __init__(self, diagnostics: Callable[[], str]) -> None:
+    def __init__(
+        self, diagnostics: Callable[[], str], run_welcome: Callable[[], None]
+    ) -> None:
         super().__init__()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
@@ -361,10 +549,10 @@ class AboutPanel(QWidget):
         text.setSpacing(3)
         name = QLabel(f"{app_info.APP_NAME}  {app_info.VERSION}")
         name.setObjectName("primary")
-        description = QLabel(app_info.DESCRIPTION)
+        description = QLabel(tr(app_info.DESCRIPTION))
         description.setObjectName("small")
         description.setWordWrap(True)
-        author = QLabel(f"Made by {app_info.AUTHOR}")
+        author = QLabel(tr("Made by {author}").format(author=app_info.AUTHOR))
         author.setObjectName("muted")
         self._links = links = QLabel()
         links.setOpenExternalLinks(True)
@@ -382,9 +570,9 @@ class AboutPanel(QWidget):
         updates = QHBoxLayout()
         updates.setContentsMargins(0, 8, 0, 0)
         updates.setSpacing(12)
-        self._check_button = QPushButton("Check for updates")
+        self._check_button = QPushButton(tr("Check for updates"))
         self._check_button.setToolTip(
-            "Asks GitHub for the latest release. Nothing about this PC is sent."
+            tr("Asks GitHub for the latest release. Nothing about this PC is sent.")
         )
         self._check_button.clicked.connect(self._check_for_updates)
         self._update_status = QLabel()
@@ -398,12 +586,36 @@ class AboutPanel(QWidget):
         updates.addWidget(self._update_status, 1)
         text.addLayout(updates)
 
+        download = QHBoxLayout()
+        download.setSpacing(12)
+        self._download_button = QPushButton(tr("Download and install"))
+        self._download_button.setObjectName("primaryButton")
+        self._download_button.setToolTip(
+            tr(
+                "Downloads the new installer from GitHub, checks its checksum and "
+                "opens it. Windows asks for permission before it installs."
+            )
+        )
+        self._download_button.clicked.connect(self._start_download)
+        self._progress = QProgressBar()
+        self._progress.setTextVisible(False)
+        self._progress.setFixedHeight(6)
+        download.addWidget(self._download_button)
+        download.addWidget(self._progress, 1)
+        self._download_row = QWidget()
+        self._download_row.setLayout(download)
+        download.setContentsMargins(0, 0, 0, 0)
+        self._download_row.hide()
+        text.addWidget(self._download_row)
+
         report = QHBoxLayout()
         report.setSpacing(12)
-        copy_button = QPushButton("Copy diagnostic info")
+        copy_button = QPushButton(tr("Copy diagnostic info"))
         copy_button.setToolTip(
-            "Copies what System Monitor can and can't read on this PC (hardware and "
-            "sensors only), to paste into a problem report."
+            tr(
+                "Copies what System Monitor can and can't read on this PC (hardware and "
+                "sensors only), to paste into a problem report."
+            )
         )
         copy_button.clicked.connect(self._copy_diagnostics)
         self._copy_status = QLabel()
@@ -412,58 +624,127 @@ class AboutPanel(QWidget):
         report.addWidget(copy_button)
         report.addWidget(self._copy_status, 1)
         text.addLayout(report)
+
+        welcome = QHBoxLayout()
+        welcome_button = QPushButton(tr("Run the welcome setup again"))
+        welcome_button.clicked.connect(run_welcome)
+        welcome.addWidget(welcome_button)
+        welcome.addStretch(1)
+        text.addLayout(welcome)
         layout.addLayout(text, 1)
         self._diagnostics = diagnostics
 
         self._checker = UpdateChecker(self)
         self._checker.finished.connect(self._show_update_result)
-        self._update_result: tuple[str, str, str] | None = None
+        self._downloader = UpdateDownloader(self)
+        self._downloader.progress.connect(self._show_progress)
+        self._downloader.downloaded.connect(self._installer_ready)
+        self._downloader.failed.connect(self._download_failed)
+        self._release: ReleaseInfo | None = None
+        self._status_text = ""  # set while a download or its result is shown
         self.apply_theme_colors()
 
     def apply_theme_colors(self) -> None:
         link_style = f"color: {theme.ACCENT}; text-decoration: none;"
         separator = "&nbsp;&nbsp;·&nbsp;&nbsp;"
         self._links.setText(
-            f'<a style="{link_style}" href="{app_info.REPOSITORY_URL}">Project page</a>'
+            f'<a style="{link_style}" href="{app_info.REPOSITORY_URL}">{tr("Project page")}</a>'
             f"{separator}"
-            f'<a style="{link_style}" href="{app_info.ISSUES_URL}">Report a problem</a>'
+            f'<a style="{link_style}" href="{app_info.ISSUES_URL}">{tr("Report a problem")}</a>'
             f"{separator}"
-            f'<a style="{link_style}" href="{app_info.GITHUB_URL}">GitHub profile</a>'
+            f'<a style="{link_style}" href="{app_info.GITHUB_URL}">{tr("GitHub profile")}</a>'
         )
         self._legal.setText(
-            f"{escape(app_info.COPYRIGHT)}. Free software under the "
-            f'<a style="{link_style}" href="{app_info.LICENSE_URL}">{app_info.LICENSE}</a>'
-            ", with ABSOLUTELY NO WARRANTY."
+            tr("{copyright}. Free software under the {license}, with ABSOLUTELY NO WARRANTY.")
+            .format(
+                copyright=escape(app_info.COPYRIGHT),
+                license=f'<a style="{link_style}" href="{app_info.LICENSE_URL}">'
+                f"{app_info.LICENSE}</a>",
+            )
         )
-        if self._update_result is not None:
-            self._show_update_result(*self._update_result)
+        if self._release is not None:
+            self._show_update_result(self._release)
 
     def _copy_diagnostics(self) -> None:
         QGuiApplication.clipboard().setText(self._diagnostics())
         self._copy_status.setText(
-            "Copied. Paste it into a problem report with “Report a problem” above."
+            tr("Copied. Paste it into a problem report with “Report a problem” above.")
         )
 
     def _check_for_updates(self) -> None:
         if self._checker.check():
             self._check_button.setEnabled(False)
-            self._update_status.setText("Checking…")
+            self._update_status.setText(tr("Checking…"))
 
-    def _show_update_result(self, state: str, version: str, detail: str) -> None:
-        self._update_result = (state, version, detail)
+    def _show_update_result(self, info: ReleaseInfo) -> None:
+        self._release = info
         self._check_button.setEnabled(True)
+        self._download_row.hide()
         link_style = f"color: {theme.ACCENT}; text-decoration: none;"
-        if state == NEWER:
-            self._update_status.setText(
-                f'<span style="color:{theme.GREEN}">Version {escape(version)} is available.</span>'
-                f'&nbsp;&nbsp;<a style="{link_style}" href="{escape(detail)}">Download</a>'
+        if info.state == NEWER:
+            text = (
+                f'<span style="color:{theme.GREEN}">'
+                + tr("Version {version} is available.").format(version=escape(info.version))
+                + "</span>"
             )
-        elif state == CURRENT:
-            self._update_status.setText(f"You have the latest version ({app_info.VERSION}).")
-        elif state == NO_RELEASES:
-            self._update_status.setText("No releases have been published yet.")
+            if info.can_download:
+                self._download_row.show()
+                self._download_button.setEnabled(True)
+                self._progress.setValue(0)
+            else:
+                text += (
+                    f'&nbsp;&nbsp;<a style="{link_style}" href="{escape(info.link)}">'
+                    f'{tr("Download")}</a>'
+                )
+            self._update_status.setText(self._status_text or text)
+        elif info.state == CURRENT:
+            self._update_status.setText(
+                tr("You have the latest version ({version}).").format(
+                    version=app_info.VERSION
+                )
+            )
+        elif info.state == NO_RELEASES:
+            self._update_status.setText(tr("No releases have been published yet."))
         else:
-            self._update_status.setText(escape(detail))
+            self._update_status.setText(escape(info.message))
+
+    def _start_download(self) -> None:
+        if self._release is None or not self._downloader.start(self._release):
+            return
+        self._download_button.setEnabled(False)
+        self._check_button.setEnabled(False)
+        self._status_text = tr("Downloading…")
+        self._update_status.setText(self._status_text)
+
+    def _show_progress(self, done: int, total: int) -> None:
+        if total > 0:
+            self._progress.setRange(0, total)
+            self._progress.setValue(done)
+        else:
+            self._progress.setRange(0, 0)
+
+    def _installer_ready(self, path: str) -> None:
+        self._check_button.setEnabled(True)
+        self._status_text = tr(
+            "Downloaded and checked. The installer opened; Windows will ask for "
+            "permission to continue."
+        )
+        self._update_status.setText(self._status_text)
+        try:
+            os.startfile(path)  # noqa: S606 - the verified installer, on Windows
+        except OSError as error:
+            self._status_text = tr("Couldn't open the installer ({reason}).").format(
+                reason=error
+            )
+            self._update_status.setText(self._status_text)
+            self._download_button.setEnabled(True)
+
+    def _download_failed(self, message: str) -> None:
+        self._check_button.setEnabled(True)
+        self._download_button.setEnabled(True)
+        self._progress.setValue(0)
+        self._status_text = escape(message)
+        self._update_status.setText(self._status_text)
 
 
 class SettingsDialog(QDialog):
@@ -479,25 +760,27 @@ class SettingsDialog(QDialog):
         self._settings = settings
         self._tray_available = tray_available
         self._sensor_app_available = sensor_app_available
-        self.setWindowTitle("Settings")
-        self.resize(600, 780)
+        self.setWindowTitle(tr("Settings"))
+        self.resize(620, 800)
 
         self._autostart = ToggleSwitch()
         self._minimized = ToggleSwitch()
         self._sensor_app = ToggleSwitch()
         self._strip = ToggleSwitch()
         self._colored = ToggleSwitch()
+        self._hover_panel = ToggleSwitch()
         self._hide_full_screen = ToggleSwitch()
         self._close_to_tray = ToggleSwitch()
         self._alerts = ToggleSwitch()
         self._refresh = NoWheelComboBox()
         for seconds, label in REFRESH_CHOICES:
-            self._refresh.addItem(label, seconds)
+            self._refresh.addItem(tr(label), seconds)
         self._bound_switches = (
             (self._minimized, START_MINIMIZED),
             (self._sensor_app, MANAGE_SENSOR_APP),
             (self._strip, STRIP_VISIBLE),
             (self._colored, STRIP_COLORED),
+            (self._hover_panel, STRIP_HOVER_PANEL),
             (self._hide_full_screen, STRIP_HIDE_FULL_SCREEN),
             (self._close_to_tray, CLOSE_TO_TRAY),
             (self._alerts, ALERTS_ENABLED),
@@ -505,16 +788,58 @@ class SettingsDialog(QDialog):
         self._strip_layout = StripLayoutEditor(settings)
         self._tray_icon = NoWheelComboBox()
         for key, label in TRAY_ICON_CHOICES:
-            self._tray_icon.addItem(label, key)
+            self._tray_icon.addItem(tr(label), key)
         self._font_size = NoWheelComboBox()
-        for points, label in FONT_CHOICES:
-            self._font_size.addItem(label, points)
+        for points, label in FONT_SIZE_CHOICES:
+            self._font_size.addItem(tr(label), points)
+        self._font_family = NoWheelComboBox()
+        self._background = NoWheelComboBox()
+        for percent, label in BACKGROUND_CHOICES:
+            self._background.addItem(tr(label), percent)
         self._screen = NoWheelComboBox()
         self._adapter = NoWheelComboBox()
+        self._adapter.setMinimumWidth(180)
+        self._speed_unit = NoWheelComboBox()
+        for value, label in SPEED_CHOICES:
+            self._speed_unit.addItem(tr(label), value)
+        self._data_limit = NoWheelSpinBox()
+        self._data_limit.setRange(0, 100_000)
+        self._data_limit.setSuffix(" GB")
+        self._data_limit.setSpecialValueText(tr("No limit"))
+        self._data_limit.setMinimumWidth(110)
         self._theme = NoWheelComboBox()
         for mode, label in THEME_CHOICES:
-            self._theme.addItem(label, mode)
-        self._adapter.setMinimumWidth(180)
+            self._theme.addItem(tr(label), mode)
+        self._language = NoWheelComboBox()
+        for code, name in i18n.LANGUAGES:
+            self._language.addItem(name, code)
+        self._temperature_unit = NoWheelComboBox()
+        for value, label in TEMPERATURE_CHOICES:
+            self._temperature_unit.addItem(tr(label), value)
+        self._alert_cpu = percent_box(50, 100)
+        self._alert_ram = percent_box(50, 100)
+        self._alert_drive = percent_box(1, 50)
+        self._alert_battery = percent_box(1, 50)
+        self._bound_numbers = (
+            (self._data_limit, DATA_LIMIT_GB),
+            (self._alert_cpu, ALERT_CPU_PERCENT),
+            (self._alert_ram, ALERT_RAM_PERCENT),
+            (self._alert_drive, ALERT_DRIVE_FREE_PERCENT),
+            (self._alert_battery, ALERT_BATTERY_PERCENT),
+        )
+        # (box, setting) pairs for choice boxes that store their current data.
+        self._bound_choices = (
+            (self._refresh, REFRESH_SECONDS),
+            (self._tray_icon, TRAY_ICON),
+            (self._font_size, STRIP_FONT_SIZE),
+            (self._font_family, STRIP_FONT_FAMILY),
+            (self._background, STRIP_BACKGROUND_OPACITY),
+            (self._screen, STRIP_SCREEN),
+            (self._adapter, NETWORK_ADAPTER),
+            (self._speed_unit, SPEED_UNIT),
+            (self._theme, THEME),
+            (self._temperature_unit, TEMPERATURE_UNIT),
+        )
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -529,25 +854,25 @@ class SettingsDialog(QDialog):
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
 
-        title = QLabel("Settings")
+        title = QLabel(tr("Settings"))
         title.setObjectName("appTitle")
-        subtitle = QLabel("Changes are saved automatically.")
+        subtitle = QLabel(tr("Changes are saved automatically."))
         subtitle.setObjectName("muted")
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
         self._minimized_row = SettingRow(
-            "Start hidden",
-            "When Windows starts the app, keep it in the tray instead of opening the window.",
+            tr("Start hidden"),
+            tr("When Windows starts the app, keep it in the tray instead of opening the window."),
             self._minimized,
         )
         self._add_group(
             layout,
-            "STARTUP",
+            tr("STARTUP"),
             (
                 SettingRow(
-                    "Start with Windows",
-                    "Open System Monitor automatically when you sign in.",
+                    tr("Start with Windows"),
+                    tr("Open System Monitor automatically when you sign in."),
                     self._autostart,
                 ),
                 self._minimized_row,
@@ -555,117 +880,191 @@ class SettingsDialog(QDialog):
         )
         self._add_group(
             layout,
-            "APPEARANCE",
+            tr("APPEARANCE"),
             (
                 SettingRow(
-                    "Theme",
-                    "Dark, light, or follow the app mode set in Windows.",
+                    tr("Theme"),
+                    tr("Dark, light, or follow the app mode set in Windows."),
                     self._theme,
+                ),
+                SettingRow(
+                    tr("Language"),
+                    tr("The language of the app. It changes after a restart."),
+                    self._language,
+                ),
+                SettingRow(
+                    tr("Temperature unit"),
+                    tr("How temperatures are shown everywhere in the app."),
+                    self._temperature_unit,
                 ),
             ),
         )
         if not sensor_app_available:
             sensor_text = (
-                "CPU temperature isn't set up on this PC. Run the System Monitor "
-                "installer again and keep “Show CPU temperature” ticked."
+                tr(
+                    "CPU temperature isn't set up on this PC. Run the System Monitor "
+                    "installer again and keep “Show CPU temperature” ticked."
+                )
                 if getattr(sys, "frozen", False)
-                else "CPU temperature isn't set up on this PC. Install "
-                "LibreHardwareMonitor, then run sensor_setup.ps1 as administrator."
+                else tr(
+                    "CPU temperature isn't set up on this PC. Install "
+                    "LibreHardwareMonitor, then run sensor_setup.ps1 as administrator."
+                )
             )
         elif sensor_app_shows_tray_icon:
-            sensor_text = (
+            sensor_text = tr(
                 "Starts LibreHardwareMonitor with this app and closes it when you quit. "
                 "It shows its own tray icon; run sensor_setup.ps1 as administrator "
                 "once to read the sensors without it."
             )
         else:
-            sensor_text = (
+            sensor_text = tr(
                 "Reads CPU temperature in the background, with no extra window or "
                 "tray icon. Starts with this app and stops when you quit."
             )
         self._sensor_row = SettingRow(
-            "CPU temperature sensor", sensor_text, self._sensor_app
+            tr("CPU temperature sensor"), sensor_text, self._sensor_app
         )
-        self._add_group(layout, "SENSORS", (self._sensor_row,))
+        self._add_group(layout, tr("SENSORS"), (self._sensor_row,))
         self._strip_rows = (
             SettingRow(
-                "Show on the taskbar",
-                "Live readings next to the clock. Drag them to move.",
+                tr("Show on the taskbar"),
+                tr("Live readings next to the clock. Drag them to move."),
                 self._strip,
             ),
             SettingRow(
-                "Color warnings",
-                "Turn a reading amber or red when it gets high.",
+                tr("Color warnings"),
+                tr("Turn a reading amber or red when it gets high."),
                 self._colored,
             ),
             SettingRow(
-                "Hide during full-screen apps",
-                "Step aside for games, videos and remote desktops such as Parsec, "
-                "like the Windows taskbar does.",
+                tr("Details on hover"),
+                tr(
+                    "Rest the mouse on the readings to see every CPU core, the "
+                    "busiest apps and each connection's speed."
+                ),
+                self._hover_panel,
+            ),
+            SettingRow(
+                tr("Hide during full-screen apps"),
+                tr(
+                    "Step aside for games, videos and remote desktops such as Parsec, "
+                    "like the Windows taskbar does."
+                ),
                 self._hide_full_screen,
             ),
             SettingRow(
-                "Text size",
-                "Larger text is easier to read; two lines fit up to Extra large.",
+                tr("Text size"),
+                tr("Larger text is easier to read; two lines fit up to Extra large."),
                 self._font_size,
             ),
             SettingRow(
-                "Screen",
-                "With more than one screen, pick whose taskbar shows the readings.",
+                tr("Font"),
+                tr("The typeface of the readings."),
+                self._font_family,
+            ),
+            SettingRow(
+                tr("Background"),
+                tr("A dark or light backdrop behind the text, to read it more easily."),
+                self._background,
+            ),
+            SettingRow(
+                tr("Screen"),
+                tr("With more than one screen, pick whose taskbar shows the readings."),
                 self._screen,
             ),
             self._strip_layout,
         )
-        self._add_group(layout, "TASKBAR STRIP", self._strip_rows)
+        self._add_group(layout, tr("TASKBAR STRIP"), self._strip_rows)
         self._tray_rows = (
             SettingRow(
-                "Tray icon",
-                "The app keeps a single icon in the notification area. "
-                "Show the logo, or one live reading.",
+                tr("Tray icon"),
+                tr(
+                    "The app keeps a single icon in the notification area. "
+                    "Show the logo, or one live reading."
+                ),
                 self._tray_icon,
             ),
             SettingRow(
-                "Keep running when closed",
-                "Closing the window hides it to the tray instead of quitting.",
+                tr("Keep running when closed"),
+                tr("Closing the window hides it to the tray instead of quitting."),
                 self._close_to_tray,
             ),
             SettingRow(
-                "Usage alerts",
-                "Notify me when CPU or memory stays above 90%, the drive is "
-                "almost full, or the battery is low.",
+                tr("Usage alerts"),
+                tr(
+                    "Notify me when CPU or memory stays high, a drive is "
+                    "almost full, the battery is low, or the data limit is near."
+                ),
                 self._alerts,
             ),
         )
-        self._add_group(layout, "TRAY & ALERTS", self._tray_rows)
+        self._add_group(layout, tr("TRAY & ALERTS"), self._tray_rows)
+        self._alert_rows = (
+            SettingRow(
+                tr("CPU usage above"),
+                tr("Alert when the processor stays above this for 30 seconds."),
+                self._alert_cpu,
+            ),
+            SettingRow(
+                tr("Memory usage above"),
+                tr("Alert when memory stays above this for 30 seconds."),
+                self._alert_ram,
+            ),
+            SettingRow(
+                tr("Drive free space below"),
+                tr("Alert when any drive has less than this much free."),
+                self._alert_drive,
+            ),
+            SettingRow(
+                tr("Battery below"),
+                tr("Alert when the battery drops to this level while unplugged."),
+                self._alert_battery,
+            ),
+        )
+        self._add_group(layout, tr("ALERT LEVELS"), self._alert_rows)
         self._add_group(
             layout,
-            "NETWORK",
+            tr("NETWORK"),
             (
                 SettingRow(
-                    "Network adapter",
-                    "Measure speed and data use for one connection, such as Wi-Fi "
-                    "or Ethernet. “All adapters” can count VPN traffic twice. Data "
-                    "use is counted while System Monitor runs.",
+                    tr("Network adapter"),
+                    tr(
+                        "Measure speed and data use for one connection, such as Wi-Fi "
+                        "or Ethernet. “All adapters” can count VPN traffic twice. Data "
+                        "use is counted while System Monitor runs."
+                    ),
                     self._adapter,
+                ),
+                SettingRow(
+                    tr("Speed unit"),
+                    tr("Show internet speed in bytes (like download managers) or bits (like providers)."),
+                    self._speed_unit,
+                ),
+                SettingRow(
+                    tr("Monthly data limit"),
+                    tr("Get a warning at 80% and when the limit is reached. Zero means no limit."),
+                    self._data_limit,
                 ),
             ),
         )
         self._add_group(
             layout,
-            "REFRESH",
+            tr("REFRESH"),
             (
                 SettingRow(
-                    "Refresh rate",
-                    "Slower refresh uses a little less CPU.",
+                    tr("Refresh rate"),
+                    tr("Slower refresh uses a little less CPU."),
                     self._refresh,
                 ),
             ),
         )
         # The window's latest reading adds what's shown for CPU and GPU.
         self._about = AboutPanel(
-            lambda: diagnostics.collect(getattr(parent, "last_reading", None))
+            lambda: diagnostics.collect(getattr(parent, "last_reading", None)),
+            self._run_welcome,
         )
-        self._add_group(layout, "ABOUT", (self._about,))
+        self._add_group(layout, tr("ABOUT"), (self._about,))
 
         self._error = QLabel()
         self._error.setObjectName("error")
@@ -677,7 +1076,7 @@ class SettingsDialog(QDialog):
         buttons = QHBoxLayout()
         buttons.setContentsMargins(24, 12, 24, 18)
         buttons.addStretch(1)
-        done = QPushButton("Done")
+        done = QPushButton(tr("Done"))
         done.setObjectName("primaryButton")
         done.setDefault(True)
         done.clicked.connect(self.accept)
@@ -689,24 +1088,15 @@ class SettingsDialog(QDialog):
             switch.toggled.connect(
                 lambda checked, key=key: self._settings.set_value(key, checked)
             )
-        self._refresh.currentIndexChanged.connect(
-            lambda: self._settings.set_value(REFRESH_SECONDS, self._refresh.currentData())
-        )
-        self._tray_icon.currentIndexChanged.connect(
-            lambda: self._settings.set_value(TRAY_ICON, self._tray_icon.currentData())
-        )
-        self._font_size.currentIndexChanged.connect(
-            lambda: self._settings.set_value(STRIP_FONT_SIZE, self._font_size.currentData())
-        )
-        self._screen.currentIndexChanged.connect(
-            lambda: self._settings.set_value(STRIP_SCREEN, self._screen.currentData())
-        )
-        self._theme.currentIndexChanged.connect(
-            lambda: self._settings.set_value(THEME, self._theme.currentData())
-        )
-        self._adapter.currentIndexChanged.connect(
-            lambda: self._settings.set_value(NETWORK_ADAPTER, self._adapter.currentData())
-        )
+        for box, key in self._bound_choices:
+            box.currentIndexChanged.connect(
+                lambda _=0, box=box, key=key: self._settings.set_value(key, box.currentData())
+            )
+        for number, key in self._bound_numbers:
+            number.valueChanged.connect(
+                lambda value, key=key: self._settings.set_value(key, value)
+            )
+        self._language.currentIndexChanged.connect(self._language_chosen)
         settings.changed.connect(self._sync)
         self._sync()
 
@@ -732,18 +1122,16 @@ class SettingsDialog(QDialog):
 
     def _sync(self, *_) -> None:
         widgets = [switch for switch, _ in self._bound_switches]
-        widgets += [
-            self._autostart,
-            self._refresh,
-            self._tray_icon,
-            self._font_size,
-            self._theme,
-        ]
+        widgets += [box for box, _ in self._bound_choices]
+        widgets += [number for number, _ in self._bound_numbers]
+        widgets += [self._autostart, self._language]
         for widget in widgets:
             widget.blockSignals(True)
 
         for switch, key in self._bound_switches:
             switch.setChecked(self._settings.value(key))
+        for number, key in self._bound_numbers:
+            number.setValue(self._settings.value(key))
         autostart = is_autostart_enabled()
         self._autostart.setChecked(autostart)
         self._autostart.setEnabled(autostart_supported())
@@ -756,16 +1144,22 @@ class SettingsDialog(QDialog):
         strip_on = self._tray_available and self._settings.value(STRIP_VISIBLE)
         for row in self._strip_rows[1:]:
             row.setEnabled(strip_on)
+        alerts_on = self._settings.value(ALERTS_ENABLED)
+        for row in self._alert_rows:
+            row.setEnabled(alerts_on)
         self._strip_layout.sync()
-        self._tray_icon.setCurrentIndex(
-            max(0, self._tray_icon.findData(self._settings.value(TRAY_ICON)))
+        fill_combo(
+            self._font_family, strip_font_choices(), self._settings.value(STRIP_FONT_FAMILY)
         )
-        index = self._refresh.findData(self._settings.value(REFRESH_SECONDS))
-        self._refresh.setCurrentIndex(max(index, 0))
-        self._font_size.setCurrentIndex(
-            max(0, self._font_size.findData(self._settings.value(STRIP_FONT_SIZE)))
+        # Choice boxes with fixed items just select the saved value; the rest
+        # are rebuilt because their items depend on this PC.
+        refilled = (self._font_family, self._screen, self._adapter)
+        for box, key in self._bound_choices:
+            if box not in refilled:
+                box.setCurrentIndex(max(0, box.findData(self._settings.value(key))))
+        self._language.setCurrentIndex(
+            max(0, self._language.findData(self._settings.value(LANGUAGE)))
         )
-        self._theme.setCurrentIndex(max(0, self._theme.findData(self._settings.value(THEME))))
         fill_combo(self._screen, screen_choices(), self._settings.value(STRIP_SCREEN))
         saved_adapter = self._settings.value(NETWORK_ADAPTER)
         fill_combo(self._adapter, adapter_choices(saved_adapter), saved_adapter)
@@ -777,15 +1171,37 @@ class SettingsDialog(QDialog):
         try:
             set_autostart(enabled)
         except OSError as error:
-            self._error.setText(f"Couldn't change the startup setting: {error}")
+            self._error.setText(
+                tr("Couldn't change the startup setting: {reason}").format(reason=error)
+            )
             self._error.show()
         else:
             self._error.hide()
         self._sync()
 
+    def _language_chosen(self) -> None:
+        code = self._language.currentData()
+        self._settings.set_value(LANGUAGE, code)
+        if code == i18n.current_language():
+            return
+        window = self.parent()
+        if hasattr(window, "restart_application") and dialogs.ask(
+            self,
+            tr("Language"),
+            tr("System Monitor needs to restart to change the language. Restart now?"),
+            tr("Restart now"),
+            tr("Later"),
+        ):
+            window.restart_application()
+
+    def _run_welcome(self) -> None:
+        from welcome import WelcomeDialog
+
+        WelcomeDialog(self._settings, self).exec()
+
     def apply_theme_colors(self) -> None:
         self._about.apply_theme_colors()
-        self._strip_layout.update()
+        self._strip_layout.sync()
         match_title_bar(self)
 
     def showEvent(self, event) -> None:

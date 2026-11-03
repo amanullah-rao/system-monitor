@@ -7,27 +7,34 @@ and PySide6.
 
 ## Features
 
-- **Dashboard** with gauges, history sparklines, GPU details and the busiest
-  processes; a **compact view** shows just the key numbers.
+- **Dashboard** with gauges, history sparklines, GPU details, every drive and
+  the busiest processes; a **compact view** shows just the key numbers.
+  Right-click a process to end it or open its folder; click CPU or Memory to
+  sort.
 - **Taskbar strip** — readings as text directly on the taskbar, next to the
   clock: upload and download speed, CPU, RAM, CPU and GPU temperature, GPU
   usage, drive space, disk activity, battery, time since start-up, and data
-  used today or this month. Pick what to show, set the order, choose one or
-  two lines, a text size, and which screen's taskbar to use. It stays visible
-  when you click the taskbar or open the hidden icons (^), slides away and
-  back with an auto-hiding taskbar, and steps aside for full-screen games,
-  videos and remote desktops such as Parsec (this can be turned off).
-- **Data usage** — internet data used today and this month, for all adapters
-  or one connection (Wi-Fi, Ethernet, …). It's counted while the app runs.
+  used today or this month, and time left on battery. Pick what to show, set
+  the order and a color for each reading, choose one or two lines, a text
+  size, a font, a backdrop and which screen's taskbar to use. Rest the mouse
+  on it for every CPU core, the busiest apps and each connection's speed. It
+  stays visible when you click the taskbar or open the hidden icons (^),
+  slides away and back with an auto-hiding taskbar, and steps aside for
+  full-screen games, videos and remote desktops such as Parsec (this can be
+  turned off).
+- **Data usage** — internet data used today and this month, a 30-day chart,
+  and an optional monthly limit with a warning, for all adapters or one
+  connection (Wi-Fi, Ethernet, …). It's counted while the app runs. Speeds can
+  be shown in bytes or bits.
 - **One tray icon** showing the app logo or one live reading, with a summary
   on hover and every option on right-click.
 - **CPU and GPU temperature** through the LibreHardwareMonitor library (Intel
   and AMD Ryzen processors; NVIDIA, AMD and Intel graphics), with no extra
   window or tray icon (see below).
-- **Usage alerts** when CPU or memory stays above 90%, the system drive is
-  almost full, or the battery is low.
-- **Dark or light theme**, or match the app mode set in Windows; it switches
-  straight away.
+- **Usage alerts** when CPU or memory stays high, a drive is almost full, the
+  battery is low or the data limit is near. You choose the levels.
+- **English and Korean (한국어)**, a welcome page for first-time setup, and a
+  **dark or light theme** (or match the app mode set in Windows).
 - Starts with Windows if you like, refreshes every ½ second by default, and
   uses about 3% of one CPU core and around 150 MB of memory.
 
@@ -45,7 +52,8 @@ protected your PC". Click **More info → Run anyway** if you downloaded it from
 the Releases page above.
 
 **Check for updates** is in **Settings → About**. It only runs when you click
-it.
+it. When a newer version exists, it can download the installer, check it
+against GitHub's checksum and open it.
 
 ## CPU temperature
 
@@ -142,8 +150,15 @@ Neither needs Python on the target PC (Windows 10/11, 64-bit).
 - `taskbar_strip.py` — text overlay on the taskbar
 - `tray.py` — tray icon, tooltip and menu
 - `alerts.py` — usage notifications
-- `updates.py` — **Check for updates**
+- `updates.py` — **Check for updates** and the installer download
 - `diagnostics.py` — **Copy diagnostic info**
+- `collectors.py` — drives, per-adapter speed and battery power
+- `hover_panel.py` — the details panel over the taskbar strip
+- `welcome.py` — the first-run setup page
+- `i18n.py`, `translations_ko.py`, `tools_i18n.py` — languages, and a check
+  that every sentence has a Korean translation
+- `process_control.py`, `dialogs.py`, `restart.py` — ending processes, message
+  boxes and restarting the app
 - `widgets.py` — dashboard window, cards, gauges and sparklines
 - `settings.py`, `settings_dialog.py` — saved preferences and the Settings window
 - `theme.py`, `formatting.py` — colors, styles, icon and number formatting

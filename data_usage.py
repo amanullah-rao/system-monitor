@@ -55,6 +55,21 @@ class DataUsageTracker:
         days = [value for day, value in self._days.items() if day.startswith(prefix)]
         return sum(day[0] for day in days), sum(day[1] for day in days)
 
+    def last_days(
+        self, count: int = 30, today: date | None = None
+    ) -> list[tuple[date, int, int]]:
+        """(day, received, sent) for the last `count` days, oldest first.
+
+        Days with nothing recorded count as zero.
+        """
+        end = today or date.today()
+        days = []
+        for back in range(count - 1, -1, -1):
+            day = end - timedelta(days=back)
+            received, sent = self._days.get(day.isoformat(), (0, 0))
+            days.append((day, received, sent))
+        return days
+
     def save(self, today: date | None = None) -> None:
         if not self._dirty:
             return
