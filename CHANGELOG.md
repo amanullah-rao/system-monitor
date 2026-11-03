@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.2 — 2026-11-03
+
+- Fixed: the taskbar strip stayed on screen during some games and remote
+  desktops. Borderless games and Parsec fill the screen while carrying the
+  "maximized" flag, which the full-screen check wrongly ruled out. It now also
+  asks Windows whether a full-screen app or presentation is active.
+- Fixed: the strip's right-click menu opened partly behind the taskbar, which
+  hid its lower entries. It now opens fully above the taskbar.
+
 ## 1.1.1 — 2026-10-22
 
 - Fixed: a schtasks.exe error could appear when shutting down or signing out

@@ -6,7 +6,7 @@ import ctypes.wintypes as wintypes
 import os
 import sys
 
-from PySide6.QtCore import QRect, QRectF, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRect, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QScreen
 from PySide6.QtWidgets import QMenu, QWidget
 
@@ -88,7 +88,10 @@ if sys.platform == "win32":
     ]
     _user32.GetForegroundWindow.restype = ctypes.c_void_p
     _user32.IsZoomed.argtypes = [ctypes.c_void_p]
+    _user32.IsIconic.argtypes = [ctypes.c_void_p]
     _user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+    _shell32.SHQueryUserNotificationState.argtypes = [ctypes.POINTER(ctypes.c_int)]
+    _shell32.SHQueryUserNotificationState.restype = ctypes.c_long
     _user32.GetWindowThreadProcessId.argtypes = [
         ctypes.c_void_p,
         ctypes.POINTER(wintypes.DWORD),
@@ -175,14 +178,32 @@ SHELL_WINDOW_CLASSES = frozenset(
 )
 
 
-def full_screen_app_on(monitor: wintypes.RECT) -> bool:
-    """Whether the active window fills this screen, as games, videos and Parsec do.
+# SHQueryUserNotificationState results that mean a full-screen app or a
+# presentation has the screen: a non-Direct3D full-screen app, a Direct3D
+# full-screen game, and presentation mode.
+FULL_SCREEN_NOTIFICATION_STATES = frozenset({2, 3, 4})
+
+
+def _notification_state() -> int:
+    state = ctypes.c_int(5)  # QUNS_ACCEPTS_NOTIFICATIONS: nothing special
+    if _shell32.SHQueryUserNotificationState(ctypes.byref(state)) != 0:
+        return 5
+    return state.value
+
+
+def full_screen_app_on(monitor: wintypes.RECT, taskbar_hides: bool = False) -> bool:
+    """Whether the active window has this screen to itself, as games, videos
+    and remote desktops such as Parsec do.
 
     Windows moves its taskbar behind such windows; the strip should go too.
-    A maximized window doesn't count: it leaves the taskbar uncovered.
+    Games and Parsec often carry the "maximized" flag too, so that doesn't
+    rule a window out; an ordinary maximized window just stops at the
+    taskbar, so it doesn't reach the screen's edges. With an auto-hiding
+    taskbar, a maximized window does reach them, but the taskbar can slide
+    over it, so that case isn't full screen.
     """
     hwnd = _user32.GetForegroundWindow()
-    if not hwnd or _user32.IsZoomed(hwnd) or not _user32.IsWindowVisible(hwnd):
+    if not hwnd or not _user32.IsWindowVisible(hwnd) or _user32.IsIconic(hwnd):
         return False
     process = wintypes.DWORD()
     _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process))
@@ -195,12 +216,25 @@ def full_screen_app_on(monitor: wintypes.RECT) -> bool:
     window = wintypes.RECT()
     if not _user32.GetWindowRect(hwnd, ctypes.byref(window)):
         return False
-    return (
+    covers = (
         window.left <= monitor.left
         and window.top <= monitor.top
         and window.right >= monitor.right
         and window.bottom >= monitor.bottom
     )
+    if covers:
+        return not (taskbar_hides and _user32.IsZoomed(hwnd))
+    # Windows itself knows about games that change the display mode or draw
+    # in ways the window size doesn't show; trust it for the active screen.
+    if _notification_state() in FULL_SCREEN_NOTIFICATION_STATES:
+        nearest = _monitor_info(_user32.MonitorFromWindow(hwnd, 2))
+        return nearest is not None and (
+            nearest.rcMonitor.left == monitor.left
+            and nearest.rcMonitor.top == monitor.top
+            and nearest.rcMonitor.right == monitor.right
+            and nearest.rcMonitor.bottom == monitor.bottom
+        )
+    return False
 
 
 def taskbar_auto_hides() -> bool:
@@ -378,7 +412,8 @@ class TaskbarStrip(QWidget):
         self._font_metrics = QFontMetrics(self._font)
         self._migrate_position()
 
-        self._menu = QMenu()
+        # Owned by the strip, which the taskbar owns, so it opens above both.
+        self._menu = QMenu(self)
         self._menu.addAction("Open System Monitor").triggered.connect(
             self.show_monitor_requested
         )
@@ -501,13 +536,14 @@ class TaskbarStrip(QWidget):
             device = screen_device_name(screen, monitors)
         taskbar = taskbars.get(device)
         monitor = monitors[device].rcMonitor if device in monitors else None
+        auto_hides = bool(taskbar) and taskbar_auto_hides()
         if (
             self._hide_in_full_screen
             and monitor is not None
-            and full_screen_app_on(monitor)
+            and full_screen_app_on(monitor, auto_hides)
         ):
             return screen, taskbar, None
-        if taskbar and monitor is not None and taskbar_auto_hides():
+        if auto_hides and monitor is not None:
             return screen, taskbar, auto_hidden_taskbar_rect(screen, monitor, taskbar)
         return screen, taskbar, self._docked_rect(screen)
 
@@ -586,11 +622,28 @@ class TaskbarStrip(QWidget):
             self._font,
         )
 
+    def _menu_position(self, cursor: QPoint) -> QPoint:
+        """Where to open the menu so it sits fully clear of the taskbar.
+
+        The taskbar is drawn over any menu that reaches into it, which cut
+        the lower entries off. With a bottom taskbar the menu opens above it.
+        """
+        size = self._menu.sizeHint()
+        bar = self._bar
+        screen = QGuiApplication.screenAt(cursor) or QGuiApplication.primaryScreen()
+        area = screen.geometry()
+        x = max(area.left(), min(cursor.x(), area.right() - size.width() + 1))
+        if bar.top() > area.top() + area.height() // 2:  # taskbar at the bottom
+            y = bar.top() - size.height()
+        else:  # taskbar at the top
+            y = bar.bottom() + 1
+        return QPoint(x, max(area.top(), y))
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_offset = event.globalPosition().x() - self.x()
         elif event.button() == Qt.MouseButton.RightButton:
-            self._menu.exec(event.globalPosition().toPoint())
+            self._menu.exec(self._menu_position(event.globalPosition().toPoint()))
 
     def mouseMoveEvent(self, event) -> None:
         if self._drag_offset is None:
