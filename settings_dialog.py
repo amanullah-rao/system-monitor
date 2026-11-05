@@ -87,6 +87,7 @@ from settings import (
 )
 from system_monitor import network_adapters
 from taskbar_strip import (
+    ALL_SCREENS,
     columns_width,
     find_taskbars,
     layout_columns,
@@ -162,6 +163,8 @@ def screen_choices() -> list[tuple[str, str]]:
     monitors = list_monitors()
     taskbars = find_taskbars(monitors)
     choices = [("", tr("Main screen"))]
+    if len(QGuiApplication.screens()) > 1:
+        choices.append((ALL_SCREENS, tr("All screens (every taskbar)")))
     for number, screen in enumerate(QGuiApplication.screens(), start=1):
         device = screen_device_name(screen, monitors)
         size = screen.geometry().size() * screen.devicePixelRatio()

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.1 — 2026-11-05
+
+- The taskbar strip can show on **every screen's taskbar**: pick "All screens"
+  under Settings → Taskbar strip → Screen (offered when more than one screen is
+  connected). Screens you plug in or unplug are picked up automatically.
+- "LEFT" shows "Full" at 100% on the charger and "Charging" otherwise, for
+  laptops that don't report the charging power.
+
 ## 1.3.0 — 2026-11-05
 
 - **Seven interface styles**, chosen under Settings → Appearance → Style (and

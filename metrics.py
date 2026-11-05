@@ -17,7 +17,7 @@ from formatting import (
     format_temperature,
     rate_sample,
 )
-from i18n import N_
+from i18n import N_, tr
 from system_monitor import SystemReading
 from theme import ACCENT, GREEN, LIME, ORANGE, PINK, VIOLET
 
@@ -116,7 +116,10 @@ def _battery_info(reading: SystemReading) -> MetricValue:
         return MetricValue("N/A")
     power = reading.battery_power_w
     if reading.battery_plugged:
-        return MetricValue(f"⚡ {abs(power):.1f} W" if power else "⚡")
+        if power:
+            return MetricValue(f"⚡ {abs(power):.1f} W")
+        # Many laptops don't report the charging power: say what we do know.
+        return MetricValue(tr("Full") if reading.battery_percent >= 100 else tr("Charging"))
     if reading.battery_seconds_left is not None:
         return MetricValue(format_duration(reading.battery_seconds_left))
     return MetricValue(f"{abs(power):.1f} W" if power else "N/A")

@@ -6,7 +6,7 @@ import ctypes.wintypes as wintypes
 import os
 import sys
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QPoint, QRect, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -771,3 +771,113 @@ class TaskbarStrip(QWidget):
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.show_monitor_requested.emit()
+
+
+ALL_SCREENS = "*"
+
+
+class StripGroup(QObject):
+    """The strip on one taskbar, or on every screen's taskbar (ALL_SCREENS).
+
+    It offers the strip's own interface; each call goes to every strip and is
+    remembered, so a strip made later (a screen plugged in) starts the same.
+    """
+
+    show_monitor_requested = Signal()
+    settings_requested = Signal()
+    hide_requested = Signal()
+    quit_requested = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._strips: dict[str, TaskbarStrip] = {}
+        self._screen = ""
+        self._calls: dict[str, tuple] = {}
+        self._enabled = False
+        self._rebuild_timer = QTimer(self)
+        self._rebuild_timer.setSingleShot(True)
+        self._rebuild_timer.setInterval(600)
+        self._rebuild_timer.timeout.connect(self._rebuild)
+        app = QGuiApplication.instance()
+        app.screenAdded.connect(lambda _s: self._rebuild_timer.start())
+        app.screenRemoved.connect(lambda _s: self._rebuild_timer.start())
+        self._reading: SystemReading | None = None
+        self._rebuild()
+
+    # -- strips ---------------------------------------------------------------
+
+    def _wanted(self) -> list[str]:
+        if self._screen != ALL_SCREENS:
+            return [self._screen]
+        monitors = list_monitors()
+        names = [name for name in find_taskbars(monitors) if name in monitors]
+        return names or [""]
+
+    def _rebuild(self) -> None:
+        wanted = self._wanted()
+        for key in [key for key in self._strips if key not in wanted]:
+            strip = self._strips.pop(key)
+            strip.set_enabled(False)
+            strip.deleteLater()
+        for key in wanted:
+            if key in self._strips:
+                continue
+            strip = TaskbarStrip()
+            for signal in ("show_monitor_requested", "settings_requested",
+                           "hide_requested", "quit_requested"):
+                getattr(strip, signal).connect(getattr(self, signal))
+            for name, args in self._calls.items():
+                getattr(strip, name)(*args)
+            strip.set_screen(key)
+            strip.set_enabled(self._enabled)
+            if self._reading is not None and self._enabled:
+                strip.update_reading(self._reading)
+            self._strips[key] = strip
+
+    def _send(self, name: str, *args) -> None:
+        self._calls[name] = args
+        for strip in self._strips.values():
+            getattr(strip, name)(*args)
+
+    # -- the strip's interface -----------------------------------------------
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = enabled
+        for strip in self._strips.values():
+            strip.set_enabled(enabled)
+
+    def is_enabled(self) -> bool:
+        return self._enabled
+
+    def set_screen(self, name: str) -> None:
+        self._screen = name
+        self._rebuild()
+
+    def update_reading(self, reading: SystemReading) -> None:
+        self._reading = reading
+        for strip in self._strips.values():
+            strip.update_reading(reading)
+
+    def set_layout(self, keys: list[str], rows: int) -> None:
+        self._send("set_layout", keys, rows)
+
+    def set_colored(self, colored: bool) -> None:
+        self._send("set_colored", colored)
+
+    def set_font_size(self, points: float) -> None:
+        self._send("set_font_size", points)
+
+    def set_font_family(self, family: str) -> None:
+        self._send("set_font_family", family)
+
+    def set_background_opacity(self, percent: int) -> None:
+        self._send("set_background_opacity", percent)
+
+    def set_item_colors(self, colors: dict[str, str]) -> None:
+        self._send("set_item_colors", colors)
+
+    def set_hover_panel(self, enabled: bool) -> None:
+        self._send("set_hover_panel", enabled)
+
+    def set_hide_in_full_screen(self, hide: bool) -> None:
+        self._send("set_hide_in_full_screen", hide)

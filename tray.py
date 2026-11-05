@@ -71,7 +71,7 @@ ALERT_KEYS = (
     DATA_LIMIT_NOTICE,
 )
 from system_monitor import SystemReading
-from taskbar_strip import TaskbarStrip
+from taskbar_strip import StripGroup
 # Tray icons sit on the taskbar, so they keep the dark theme's colors
 # (imported once) whatever theme the app windows use.
 from theme import AMBER, MUTED, RED, SURFACE, TRACK, make_app_icon
@@ -248,7 +248,7 @@ class TrayMonitor(QObject):
             window.quit_application
         )
 
-        self._strip = TaskbarStrip()
+        self._strip = StripGroup()
         self._strip.show_monitor_requested.connect(window.bring_to_front)
         self._strip.settings_requested.connect(window.open_settings)
         self._strip.quit_requested.connect(window.quit_application)
