@@ -51,13 +51,13 @@ from formatting import (
 )
 import dialogs
 import process_control
-import soft
+import styles
 from restart import start_new_copy
 from collectors import DriveReading
 from i18n import tr
 from metrics import METRICS_BY_KEY
 from sampler import SamplerThread
-from soft import SoftButton, SoftFrame
+from styles import StyledButton, StyledFrame
 from settings import (
     CLOSE_TO_TRAY,
     DATA_LIMIT_GB,
@@ -173,7 +173,13 @@ class Sparkline(QWidget):
         self.setFixedHeight(46)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
+    # While a reading is only being drawn again (after a setting changed),
+    # the charts must not take it as a new sample.
+    frozen = False
+
     def add_value(self, value: float) -> None:
+        if Sparkline.frozen:
+            return
         value = max(0.0, value)
         if self._max_value is not None:
             value = min(self._max_value, value)
@@ -221,8 +227,13 @@ class Sparkline(QWidget):
         painter.setBrush(gradient)
         painter.drawPath(area)
 
-        painter.setPen(QPen(color, 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
+        if styles.current().chart_glow:
+            glow = QColor(color)
+            glow.setAlpha(55)
+            painter.setPen(QPen(glow, 6))
+            painter.drawPath(line)
+        painter.setPen(QPen(color, 2))
         painter.drawPath(line)
 
 
@@ -246,27 +257,15 @@ class RingGauge(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         half = self.THICKNESS / 2
         rect = QRectF(half, half, self.width() - self.THICKNESS, self.height() - self.THICKNESS)
-
-        if theme.is_soft():
-            inner = rect.adjusted(self.THICKNESS + 5, self.THICKNESS + 5,
-                                  -(self.THICKNESS + 5), -(self.THICKNESS + 5))
-            soft.paint_raised(painter, inner, 0, ellipse=True, depth=0.45,
-                              dpr=self.devicePixelRatioF())
-        pen = QPen(QColor(theme.TRACK), self.THICKNESS)
-        painter.setPen(pen)
-        painter.drawEllipse(rect)
-        if self._value is not None and self._value > 0:
-            pen.setColor(self._color)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            span = -int(min(self._value, 100.0) / 100 * 360 * 16)
-            painter.drawArc(rect, 90 * 16, span)
+        styles.current().paint_ring(
+            painter, rect, self.THICKNESS, self._value, self._color, self.devicePixelRatioF()
+        )
 
         font = QFont("Segoe UI")
         font.setPixelSize(20)
         font.setBold(True)
         painter.setFont(font)
-        painter.setPen(QColor(theme.TEXT))
+        painter.setPen(styles.current().ring_text_color())
         text = f"{self._value:.0f}%" if self._value is not None else "—"
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
@@ -287,18 +286,14 @@ class UsageBar(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        if theme.is_soft():
-            soft.paint_inset(painter, QRectF(self.rect()), 3, depth=0.28,
-                             dpr=self.devicePixelRatioF())
-        else:
-            painter.setBrush(QColor(theme.TRACK))
-            painter.drawRoundedRect(QRectF(self.rect()), 3, 3)
+        style = styles.current()
+        style.paint_track(painter, QRectF(self.rect()), 3, self.devicePixelRatioF())
         if self._value > 0:
             width = max(6.0, self.width() * self._value / 100)
             normal = theme.color(self._color_name)
-            painter.setBrush(QColor(level_color(self._value, normal)))
-            painter.drawRoundedRect(QRectF(0, 0, width, self.height()), 3, 3)
+            style.paint_bar_fill(
+                painter, QRectF(0, 0, width, self.height()), level_color(self._value, normal), 3
+            )
 
 
 class UsageBarDelegate(QStyledItemDelegate):
@@ -331,13 +326,15 @@ class UsageBarDelegate(QStyledItemDelegate):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(theme.TRACK))
-        painter.drawRoundedRect(bar, 3, 3)
+        # Rows use the plain bar unless the style asks for its own bar drawing.
+        active = styles.current() if styles.current().table_bars else styles.get("classic")
+        active.paint_track(painter, bar, 3, 1.0)
         if value > 0:
             filled = QRectF(bar)
             filled.setWidth(max(6.0, bar.width() * min(value, 100.0) / 100))
-            painter.setBrush(QColor(level_color(value, theme.color(self._color))))
-            painter.drawRoundedRect(filled, 3, 3)
+            active.paint_bar_fill(
+                painter, filled, level_color(value, theme.color(self._color)), 3
+            )
         painter.setPen(QColor(theme.TEXT))
         painter.drawText(
             QRectF(rect.right() - self.TEXT_WIDTH, rect.top(), self.TEXT_WIDTH, rect.height()),
@@ -347,9 +344,9 @@ class UsageBarDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class Card(SoftFrame):
+class Card(StyledFrame):
     def __init__(self, title: str, color: str, parent: QWidget | None = None) -> None:
-        super().__init__("card", soft.CARD_RADIUS, 1.0, parent)
+        super().__init__("card", "card", color, parent)
         self._color_name = color
         self._chip_state: tuple[str, str] | None = None
         self.body = QVBoxLayout(self)
@@ -375,6 +372,8 @@ class Card(SoftFrame):
 
     def apply_theme_colors(self) -> None:
         self.apply_style()
+        # Some styles mark a card with a colored bar instead of this dot.
+        self._dot.setVisible(not styles.current().card_accent_bar)
         self._dot.setStyleSheet(
             f"background: {theme.color(self._color_name)}; border-radius: 4px;"
         )
@@ -938,9 +937,9 @@ class ProcessCard(Card):
         return item
 
 
-class CompactIndicator(SoftFrame):
+class CompactIndicator(StyledFrame):
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
-        super().__init__("compactIndicator", 16, 0.8, parent)
+        super().__init__("compactIndicator", "compact", None, parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(2)
@@ -1022,7 +1021,8 @@ class MonitorWindow(QMainWindow):
     def _apply_style_spacing(self) -> None:
         """Cards leave room for their own shadows in the Soft style, so the
         layout only adds what's left of the usual gap."""
-        extra = 2 * soft.margin() if theme.is_soft() else 0
+        style = styles.current()
+        extra = 2 * style.card_room("card") if style.custom_painting else 0
         self._grid.setSpacing(max(0, 14 - extra))
         self._compact_layout.setSpacing(max(0, 10 - extra))
 
@@ -1030,8 +1030,17 @@ class MonitorWindow(QMainWindow):
         if key == PROCESS_SORT:
             self.process_card.set_sort(self._settings.value(PROCESS_SORT))
         if key in (PROCESS_SORT, DATA_LIMIT_GB, SPEED_UNIT, TEMPERATURE_UNIT):
-            if self._last_reading is not None:
-                self._show_reading(self._last_reading)
+            self._redraw()
+
+    def _redraw(self) -> None:
+        """Show the latest reading again, without adding it to the charts."""
+        if self._last_reading is None:
+            return
+        Sparkline.frozen = True
+        try:
+            self._show_reading(self._last_reading)
+        finally:
+            Sparkline.frozen = False
 
     def _make_header(self) -> QHBoxLayout:
         layout = QHBoxLayout()
@@ -1050,10 +1059,10 @@ class MonitorWindow(QMainWindow):
         layout.addLayout(title_column)
         layout.addStretch(1)
 
-        self.mode_button = SoftButton(glyph_icon(GLYPH_COMPACT), "  " + tr("Compact view"))
+        self.mode_button = StyledButton(glyph_icon(GLYPH_COMPACT), "  " + tr("Compact view"))
         self.mode_button.setToolTip(tr("Switch to a small window with just the key numbers"))
         self.mode_button.clicked.connect(self._toggle_mode)
-        self.settings_button = settings_button = SoftButton(glyph_icon(GLYPH_SETTINGS), "")
+        self.settings_button = settings_button = StyledButton(glyph_icon(GLYPH_SETTINGS), "")
         settings_button.setObjectName("iconButton")
         settings_button.setToolTip(tr("Settings"))
         settings_button.clicked.connect(self.open_settings)
@@ -1119,9 +1128,8 @@ class MonitorWindow(QMainWindow):
         )
         self.settings_button.setIcon(glyph_icon(GLYPH_SETTINGS))
         self._apply_style_spacing()
-        soft.refresh_all()
-        if self._last_reading is not None:
-            self._show_reading(self._last_reading)
+        styles.refresh_all()
+        self._redraw()
         if self._settings_dialog is not None:
             self._settings_dialog.apply_theme_colors()
         match_title_bar(self)
@@ -1130,6 +1138,14 @@ class MonitorWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         match_title_bar(self)
+
+    def paintEvent(self, event) -> None:
+        style = styles.current()
+        if style.has_backdrop:
+            painter = QPainter(self)
+            style.paint_backdrop(painter, QRectF(self.rect()), self.devicePixelRatioF())
+            painter.end()
+        super().paintEvent(event)
 
     def bring_to_front(self) -> None:
         self.showNormal()

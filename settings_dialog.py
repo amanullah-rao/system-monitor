@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable
 from html import escape
 
-from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtCore import QRectF, QSize, Qt, QVariantAnimation
 from PySide6.QtGui import (
     QColor,
     QFontDatabase,
@@ -41,7 +41,7 @@ import app_info
 import dialogs
 import diagnostics
 import i18n
-import soft
+import styles
 import theme
 from i18n import N_, tr
 from metrics import (
@@ -95,8 +95,8 @@ from taskbar_strip import (
     screen_device_name,
     strip_font,
 )
-from soft import SoftButton, SoftFrame
-from theme import STYLE_CHOICES, THEME_CHOICES, make_app_icon, match_title_bar
+from styles import StyledButton, StyledFrame
+from theme import THEME_CHOICES, make_app_icon, match_title_bar
 from updates import (
     CURRENT,
     NEWER,
@@ -239,50 +239,54 @@ def percent_box(minimum: int, maximum: int, suffix: str = " %") -> NoWheelSpinBo
 
 
 class ToggleSwitch(QAbstractButton):
+    """An on/off switch, drawn by the active style, whose knob slides."""
+
+    SLIDE_MS = 130
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._progress = 0.0  # 0 off .. 1 on
+        self._slide = QVariantAnimation(self)
+        self._slide.setDuration(self.SLIDE_MS)
+        self._slide.valueChanged.connect(self._set_progress)
+        self.toggled.connect(self._animate)
         self.setFixedSize(self.sizeHint())
 
     def sizeHint(self) -> QSize:
-        return QSize(50, 28) if theme.is_soft() else QSize(44, 24)
+        return styles.current().toggle_size()
 
     def apply_style(self) -> None:
         self.setFixedSize(self.sizeHint())
         self.update()
 
-    def _paint_soft(self) -> None:
-        """An inset slot with a raised knob."""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        dpr = self.devicePixelRatioF()
-        track = QRectF(self.rect())
-        enabled = self.isEnabled()
-        soft.paint_inset(painter, track, track.height() / 2, depth=0.4, dpr=dpr)
-        diameter = track.height() - 8
-        left = track.width() - diameter - 4 if self.isChecked() else 4
-        knob = QRectF(left, 4, diameter, diameter)
-        fill = theme.ACCENT if self.isChecked() and enabled else theme.SURFACE
-        soft.paint_raised(painter, knob, 0, ellipse=True, depth=0.2, fill=fill, dpr=dpr)
+    def _set_progress(self, value) -> None:
+        self._progress = float(value)
+        self.update()
+
+    def _animate(self, checked: bool) -> None:
+        target = 1.0 if checked else 0.0
+        if not self.isVisible():
+            self._progress = target
+            return
+        self._slide.stop()
+        self._slide.setStartValue(self._progress)
+        self._slide.setEndValue(target)
+        self._slide.start()
 
     def paintEvent(self, event) -> None:
         del event
-        if theme.is_soft():
-            self._paint_soft()
-            return
+        target = 1.0 if self.isChecked() else 0.0
+        # Changes made in code (without a click) jump straight to the new state.
+        if self._slide.state() != QVariantAnimation.State.Running:
+            self._progress = target
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        track = QColor(theme.ACCENT if self.isChecked() else theme.SWITCH_OFF)
-        knob = QColor("#ffffff")
-        if not self.isEnabled():
-            track.setAlpha(80)
-            knob = QColor(theme.DISABLED)
-        painter.setBrush(track)
-        painter.drawRoundedRect(QRectF(0, 0, 44, 24), 12, 12)
-        painter.setBrush(knob)
-        painter.drawEllipse(QRectF(22 if self.isChecked() else 2, 2, 20, 20))
+        styles.current().paint_toggle(
+            painter, QRectF(self.rect()), self._progress, self.isEnabled(),
+            self.devicePixelRatioF(),
+        )
 
 
 class SettingRow(QWidget):
@@ -393,7 +397,7 @@ class StripLayoutEditor(QWidget):
         presets.setHorizontalSpacing(8)
         presets.setVerticalSpacing(8)
         for index, (name, keys) in enumerate(STRIP_PRESETS):
-            button = SoftButton(tr(name))
+            button = StyledButton(tr(name))
             button.setObjectName("pill")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _=False, keys=keys: self._apply_preset(keys))
@@ -411,9 +415,9 @@ class StripLayoutEditor(QWidget):
         self.list.model().rowsMoved.connect(self._save)
         buttons = QVBoxLayout()
         buttons.setSpacing(8)
-        up = SoftButton("▲  " + tr("Move up"))
-        down = SoftButton("▼  " + tr("Move down"))
-        self._color_button = SoftButton(tr("Text color…"))
+        up = StyledButton("▲  " + tr("Move up"))
+        down = StyledButton("▼  " + tr("Move down"))
+        self._color_button = StyledButton(tr("Text color…"))
         self._color_button.setToolTip(tr("Pick a color for the selected reading"))
         up.clicked.connect(lambda: self._move(-1))
         down.clicked.connect(lambda: self._move(1))
@@ -594,7 +598,7 @@ class AboutPanel(QWidget):
         updates = QHBoxLayout()
         updates.setContentsMargins(0, 8, 0, 0)
         updates.setSpacing(12)
-        self._check_button = SoftButton(tr("Check for updates"))
+        self._check_button = StyledButton(tr("Check for updates"))
         self._check_button.setToolTip(
             tr("Asks GitHub for the latest release. Nothing about this PC is sent.")
         )
@@ -612,7 +616,7 @@ class AboutPanel(QWidget):
 
         download = QHBoxLayout()
         download.setSpacing(12)
-        self._download_button = SoftButton(tr("Download and install"))
+        self._download_button = StyledButton(tr("Download and install"))
         self._download_button.setObjectName("primaryButton")
         self._download_button.setToolTip(
             tr(
@@ -634,7 +638,7 @@ class AboutPanel(QWidget):
 
         report = QHBoxLayout()
         report.setSpacing(12)
-        copy_button = SoftButton(tr("Copy diagnostic info"))
+        copy_button = StyledButton(tr("Copy diagnostic info"))
         copy_button.setToolTip(
             tr(
                 "Copies what System Monitor can and can't read on this PC (hardware and "
@@ -650,7 +654,7 @@ class AboutPanel(QWidget):
         text.addLayout(report)
 
         welcome = QHBoxLayout()
-        welcome_button = SoftButton(tr("Run the welcome setup again"))
+        welcome_button = StyledButton(tr("Run the welcome setup again"))
         welcome_button.clicked.connect(run_welcome)
         welcome.addWidget(welcome_button)
         welcome.addStretch(1)
@@ -838,7 +842,7 @@ class SettingsDialog(QDialog):
         for code, name in i18n.LANGUAGES:
             self._language.addItem(name, code)
         self._style = NoWheelComboBox()
-        for value, label in STYLE_CHOICES:
+        for value, label in styles.choices():
             self._style.addItem(tr(label), value)
         self._temperature_unit = NoWheelComboBox()
         for value, label in TEMPERATURE_CHOICES:
@@ -906,6 +910,7 @@ class SettingsDialog(QDialog):
                 self._minimized_row,
             ),
         )
+        self._style_row = SettingRow(tr("Style"), "", self._style)
         self._add_group(
             layout,
             tr("APPEARANCE"),
@@ -915,11 +920,7 @@ class SettingsDialog(QDialog):
                     tr("Dark, light, or follow the app mode set in Windows."),
                     self._theme,
                 ),
-                SettingRow(
-                    tr("Style"),
-                    tr("Classic is flat with outlines. Soft has rounded shapes that look pressed out of the surface."),
-                    self._style,
-                ),
+                self._style_row,
                 SettingRow(
                     tr("Language"),
                     tr("The language of the app. It changes after a restart."),
@@ -1109,7 +1110,7 @@ class SettingsDialog(QDialog):
         buttons = QHBoxLayout()
         buttons.setContentsMargins(24, 12, 24, 18)
         buttons.addStretch(1)
-        done = SoftButton(tr("Done"))
+        done = StyledButton(tr("Done"))
         done.setObjectName("primaryButton")
         done.setDefault(True)
         done.clicked.connect(self.accept)
@@ -1139,7 +1140,7 @@ class SettingsDialog(QDialog):
         heading.setObjectName("sectionTitle")
         layout.addSpacing(10)
         layout.addWidget(heading)
-        group = SoftFrame("settingsGroup", 16, 0.7)
+        group = StyledFrame("settingsGroup", "group")
         group_layout = QVBoxLayout(group)
         group_layout.setContentsMargins(0, 0, 0, 0)
         group_layout.setSpacing(0)
@@ -1193,6 +1194,8 @@ class SettingsDialog(QDialog):
         self._language.setCurrentIndex(
             max(0, self._language.findData(self._settings.value(LANGUAGE)))
         )
+        chosen = styles.get(self._settings.value(STYLE))
+        self._style_row.description.setText(tr(chosen.description))
         fill_combo(self._screen, screen_choices(), self._settings.value(STRIP_SCREEN))
         saved_adapter = self._settings.value(NETWORK_ADAPTER)
         fill_combo(self._adapter, adapter_choices(saved_adapter), saved_adapter)
@@ -1243,3 +1246,11 @@ class SettingsDialog(QDialog):
         self._sync()
         super().showEvent(event)
         match_title_bar(self)
+
+    def paintEvent(self, event) -> None:
+        style = styles.current()
+        if style.has_backdrop:
+            painter = QPainter(self)
+            style.paint_backdrop(painter, QRectF(self.rect()), self.devicePixelRatioF())
+            painter.end()
+        super().paintEvent(event)

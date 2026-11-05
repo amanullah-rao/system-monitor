@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.3.0 — 2026-11-05
+
+- **Seven interface styles**, chosen under Settings → Appearance → Style (and
+  on the welcome page), each in a dark and a light version:
+  - **Classic** — flat cards with thin outlines (the default).
+  - **Soft** — rounded neumorphic shapes pressed out of the surface.
+  - **Fluent** — calm cards and controls like Windows 11's own settings.
+  - **Modern** — clean cards with soft shadows, a colored accent on each card,
+    gradient buttons and a gentle glow.
+  - **Glass** — frosted, see-through cards over a colorful background.
+  - **3D** — raised, glossy hardware-style panels, buttons, switches and gauges.
+  - **HUD** — a futuristic display with glowing outlines, segmented gauges and
+    bars, and a technical grid (always dark).
+- Switches slide, and buttons fade to their hover color, in the styles that
+  draw their own controls.
+- The hover details panel over the taskbar strip follows the chosen style.
+- Fixed: changing a setting (or the style) added the latest reading to the
+  charts a second time.
+
 ## 1.2.0 — 2026-11-03
 
 - **Welcome page** on the first start: language, theme, what the taskbar strip

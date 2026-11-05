@@ -23,9 +23,6 @@ from PySide6.QtWidgets import QApplication, QWidget
 from i18n import N_, tr
 
 DARK, LIGHT, MATCH_WINDOWS = "dark", "light", "system"
-# The look: flat cards with borders, or soft shapes lit from the top left.
-CLASSIC, SOFT = "classic", "soft"
-STYLE_CHOICES = ((CLASSIC, N_("Classic")), (SOFT, N_("Soft")))
 
 PALETTES: dict[str, dict[str, str]] = {
     DARK: {
@@ -85,45 +82,6 @@ PALETTES: dict[str, dict[str, str]] = {
         "LIME": "#65a30d",
     },
 }
-# Soft style palettes: one surface color for the background, cards and
-# controls, with the shapes made by their shadows. Text stays high-contrast.
-SOFT_PALETTES: dict[str, dict[str, str]] = {
-    DARK: {
-        **PALETTES[DARK],
-        "BACKGROUND": "#2a2f3b",
-        "SURFACE": "#2a2f3b",
-        "SURFACE_RAISED": "#2a2f3b",
-        "BORDER": "#353c4b",
-        "CONTROL_BORDER": "#3f4758",
-        "TRACK": "#222730",
-        "MUTED": "#a3aec2",
-        "DISABLED": "#5f6a7e",
-        "TEXT": "#edf1f8",
-        "HOVER": "#303644",
-        "PRESSED": "#262b36",
-        "SWITCH_OFF": "#222730",
-        "SHADOW_DARK": "#e6141820",
-        "SHADOW_LIGHT": "#8c444d60",
-    },
-    LIGHT: {
-        **PALETTES[LIGHT],
-        "BACKGROUND": "#e4e9f1",
-        "SURFACE": "#e4e9f1",
-        "SURFACE_RAISED": "#e4e9f1",
-        "BORDER": "#d3dae6",
-        "CONTROL_BORDER": "#c4cddb",
-        "TRACK": "#d7deea",
-        "MUTED": "#5d6a82",
-        "DISABLED": "#a1abbd",
-        "TEXT": "#232c3c",
-        "HOVER": "#dbe1ec",
-        "PRESSED": "#d2d9e6",
-        "SWITCH_OFF": "#d7deea",
-        "SHADOW_DARK": "#d4a3b1c6",
-        "SHADOW_LIGHT": "#f2ffffff",
-    },
-}
-
 THEME_CHOICES = ((DARK, N_("Dark")), (LIGHT, N_("Light")), (MATCH_WINDOWS, N_("Match Windows")))
 
 # The current colors, as module attributes. Code that should follow a theme
@@ -136,7 +94,7 @@ ACCENT_HOVER = OVERLAY = ""
 ACCENT = GREEN = AMBER = RED = VIOLET = ORANGE = PINK = LIME = ""
 globals().update(PALETTES[DARK])
 current = DARK
-current_style = CLASSIC
+current_style = "classic"  # the active style's name, see styles/
 _active = PALETTES[DARK]
 
 ASSETS = Path(__file__).resolve().parent / "assets"
@@ -150,10 +108,6 @@ GLYPH_EXPAND = ""
 def color(name: str) -> str:
     """A color of the current theme by name, such as "ACCENT"."""
     return _active[name]
-
-
-def is_soft() -> bool:
-    return current_style == SOFT
 
 
 def rgba(color: str, alpha: float | None = None) -> str:
@@ -242,7 +196,7 @@ def _draw_fallback_icon() -> QIcon:
     return QIcon(pixmap)
 
 
-def stylesheet() -> str:
+def classic_stylesheet() -> str:
     return f"""
 QFrame#card, QFrame#compactIndicator {{
     background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 14px;
@@ -334,16 +288,10 @@ QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 8px; }}
 """
 
 
-def soft_stylesheet() -> str:
-    """The Soft style: controls without their own backgrounds, because the
-    shapes are drawn by soft.py; inputs get a gentle inset edge instead."""
-    dark_edge = rgba(SHADOW_DARK, 0.55)
-    light_edge = rgba(SHADOW_LIGHT, 0.9)
-    inset = (
-        f"border: 2px solid {light_edge}; border-top-color: {dark_edge}; "
-        f"border-left-color: {dark_edge}; border-bottom-color: {light_edge}; "
-        f"border-right-color: {light_edge};"
-    )
+def custom_stylesheet(input_css: str, radius: int = 12, extra: str = "") -> str:
+    """The stylesheet for styles that draw cards, buttons and switches themselves:
+    those controls get no background here. `input_css` styles dropdowns, number
+    boxes and lists (background and border); `extra` is appended."""
     return f"""
 QFrame#card, QFrame#compactIndicator, QFrame#settingsGroup {{
     background: transparent; border: none;
@@ -382,8 +330,8 @@ QHeaderView::section {{
     font-size: 11px; font-weight: 600;
 }}
 QComboBox {{
-    color: {TEXT}; background: {TRACK}; {inset}
-    border-radius: 12px; padding: 4px 10px; min-width: 110px;
+    color: {TEXT}; {input_css}
+    border-radius: {radius}px; padding: 4px 10px; min-width: 110px;
 }}
 QComboBox:hover {{ color: {ACCENT}; }}
 QComboBox:disabled {{ color: {DISABLED}; }}
@@ -392,17 +340,18 @@ QComboBox QAbstractItemView {{
     selection-background-color: {TRACK}; selection-color: {ACCENT};
 }}
 QSpinBox {{
-    color: {TEXT}; background: {TRACK}; {inset}
-    border-radius: 12px; padding: 4px 8px;
+    color: {TEXT}; {input_css}
+    border-radius: {radius}px; padding: 4px 8px;
 }}
 QSpinBox:disabled {{ color: {DISABLED}; }}
 QProgressBar {{ background: {TRACK}; border: none; border-radius: 3px; }}
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
 QScrollArea {{ border: none; background: transparent; }}
+QScrollArea > QWidget {{ background: transparent; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QListWidget {{
-    color: {TEXT}; background: {TRACK}; {inset}
-    border-radius: 12px; padding: 4px; outline: none;
+    color: {TEXT}; {input_css}
+    border-radius: {radius}px; padding: 4px; outline: none;
 }}
 QListWidget::item {{ padding: 4px 6px; border-radius: 8px; min-height: 20px; }}
 QListWidget::item:selected {{ background: {SURFACE}; color: {ACCENT}; }}
@@ -415,15 +364,19 @@ QMenu::item {{ padding: 6px 22px 6px 28px; border-radius: 8px; }}
 QMenu::item:selected {{ background: {TRACK}; color: {ACCENT}; }}
 QMenu::item:disabled {{ color: {DISABLED}; }}
 QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 8px; }}
+{extra}
 """
 
 
-def apply_theme(app: QApplication, mode: str = DARK, style: str = CLASSIC) -> str:
+def apply_theme(app: QApplication, mode: str = DARK, style: str = "classic") -> str:
     """Switch every window to a theme and style; returns DARK or LIGHT."""
+    import styles
+
     global current, current_style, _active
-    current = resolve(mode)
-    current_style = SOFT if style == SOFT else CLASSIC
-    _active = (SOFT_PALETTES if current_style == SOFT else PALETTES)[current]
+    active = styles.activate(style)
+    current = DARK if active.always_dark else resolve(mode)
+    current_style = active.name
+    _active = active.palette(current == DARK)
     globals().update(_active)
 
     app.setStyle("Fusion")
@@ -449,8 +402,8 @@ def apply_theme(app: QApplication, mode: str = DARK, style: str = CLASSIC) -> st
                  QPalette.ColorRole.ButtonText):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(DISABLED))
     app.setPalette(palette)
-    app.setFont(QFont("Segoe UI", 9))
-    app.setStyleSheet(soft_stylesheet() if is_soft() else stylesheet())
+    app.setFont(QFont(active.font_family(), 9))
+    app.setStyleSheet(active.stylesheet())
     for widget in app.topLevelWidgets():
         match_title_bar(widget)
     return current

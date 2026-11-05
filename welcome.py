@@ -5,11 +5,13 @@
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -18,9 +20,10 @@ from PySide6.QtWidgets import (
 )
 
 import i18n
+import styles
 import theme
 from i18n import tr
-from soft import SoftButton, SoftFrame
+from styles import StyledButton, StyledFrame
 from metrics import STRIP_PRESETS
 from settings import (
     FIRST_RUN_DONE,
@@ -38,35 +41,42 @@ from settings import (
     set_autostart,
 )
 from settings_dialog import SettingRow, StripPreview, ToggleSwitch
-from theme import STYLE_CHOICES, THEME_CHOICES, make_app_icon, match_title_bar
+from theme import THEME_CHOICES, make_app_icon, match_title_bar
 
 
 def pill_row(
-    options: list[tuple[object, str]], current: object, on_pick: Callable[[object], None]
+    options: list[tuple[object, str]], current: object, on_pick: Callable[[object], None],
+    columns: int = 0,
 ) -> QWidget:
-    """A row of one-of-many buttons."""
+    """A row of one-of-many buttons; with `columns` they wrap into a grid."""
     holder = QWidget()
-    layout = QHBoxLayout(holder)
+    layout = QGridLayout(holder) if columns else QHBoxLayout(holder)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
     group = QButtonGroup(holder)
     group.setExclusive(True)
-    for value, label in options:
-        button = SoftButton(label)
+    for index, (value, label) in enumerate(options):
+        button = StyledButton(label)
         button.setObjectName("pill")
         button.setCheckable(True)
         button.setChecked(value == current)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.clicked.connect(lambda _=False, value=value: on_pick(value))
         group.addButton(button)
-        layout.addWidget(button)
-    layout.addStretch(1)
+        if columns:
+            layout.addWidget(button, index // columns, index % columns)
+        else:
+            layout.addWidget(button)
+    if columns:
+        layout.setColumnStretch(columns, 1)
+    else:
+        layout.addStretch(1)
     holder.group = group  # kept alive with the row
     return holder
 
 
 def card(*rows: QWidget) -> QFrame:
-    frame = SoftFrame("settingsGroup", 16, 0.7)
+    frame = StyledFrame("settingsGroup", "group")
     layout = QVBoxLayout(frame)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(0)
@@ -154,9 +164,10 @@ class WelcomeDialog(QDialog):
             card(
                 self._pick_row(
                     pill_row(
-                        [(value, tr(label)) for value, label in STYLE_CHOICES],
+                        [(value, tr(label)) for value, label in styles.choices()],
                         settings.value(STYLE),
                         lambda value: settings.set_value(STYLE, value),
+                        columns=4,
                     )
                 )
             )
@@ -223,7 +234,7 @@ class WelcomeDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        start = SoftButton(tr("Get started"))
+        start = StyledButton(tr("Get started"))
         start.setObjectName("primaryButton")
         start.setDefault(True)
         start.clicked.connect(self.accept)
@@ -291,3 +302,11 @@ class WelcomeDialog(QDialog):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         match_title_bar(self)
+
+    def paintEvent(self, event) -> None:
+        style = styles.current()
+        if style.has_backdrop:
+            painter = QPainter(self)
+            style.paint_backdrop(painter, QRectF(self.rect()), self.devicePixelRatioF())
+            painter.end()
+        super().paintEvent(event)

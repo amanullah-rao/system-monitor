@@ -18,7 +18,7 @@ MARKERS = {"tr", "N_"}
 def find_sentences() -> dict[str, list[str]]:
     """Every literal passed to tr() or N_(), with the files that use it."""
     found: dict[str, list[str]] = {}
-    for path in sorted(ROOT.glob("*.py")):
+    for path in sorted([*ROOT.glob("*.py"), *ROOT.glob("styles/*.py")]):
         if path.name in ("translations_ko.py", "tools_i18n.py"):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))

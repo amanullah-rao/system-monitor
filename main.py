@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 import app_info
 import formatting
 import i18n
-import soft
+import styles
 from restart import RESTART_FLAG
 from sampler import SamplerThread
 from sensor_app import SensorAppLauncher
@@ -103,7 +103,7 @@ def run_welcome(app: QApplication, settings: AppSettings) -> None:
     def retheme(key: str) -> None:
         if key in (THEME, STYLE):
             apply_theme(app, settings.value(THEME), settings.value(STYLE))
-            soft.refresh_all()
+            styles.refresh_all()
 
     settings.changed.connect(retheme)
     WelcomeDialog(settings, None, first_run=True).exec()
