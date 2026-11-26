@@ -1185,9 +1185,24 @@ class MonitorWindow(QMainWindow):
                 self.sensor_app_shows_tray_icon,
                 self,
             )
-        self._settings_dialog.show()
-        self._settings_dialog.raise_()
-        self._settings_dialog.activateWindow()
+        dialog = self._settings_dialog
+        # The dialog keeps the spot it was left in, which may be on another
+        # screen: then a second "Settings" click seemed to do nothing. Bring it
+        # to the screen the app window is on.
+        if not dialog.isVisible() or dialog.screen() is not self.screen():
+            area = self.screen().availableGeometry()
+            size = dialog.frameGeometry().size()
+            centre = self.frameGeometry().center()
+            x = max(area.left(), min(centre.x() - size.width() // 2, area.right() - size.width()))
+            y = max(area.top(), min(centre.y() - size.height() // 2, area.bottom() - size.height()))
+            dialog.move(x, y)
+        dialog.show()
+        dialog.raise_()
+        if sys.platform == "win32":
+            hwnd = int(dialog.winId())
+            for insert_after in (HWND_TOPMOST, HWND_NOTOPMOST):
+                _user32.SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, SWP_KEEP_GEOMETRY)
+        dialog.activateWindow()
 
     def _toggle_mode(self) -> None:
         self._compact = not self._compact

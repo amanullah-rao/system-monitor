@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2 — 2026-11-26
+
+- Settings always opens on the screen the app window is on, and comes to the front.
+  Before, with two screens, a Settings window left on the other screen made the
+  Settings button seem to do nothing.
+
 ## 1.3.1 — 2026-11-05
 
 - The taskbar strip can show on **every screen's taskbar**: pick "All screens"
